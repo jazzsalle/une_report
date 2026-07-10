@@ -1,0 +1,2 @@
+# bash 스크립트는 CRLF로 체크아웃되면 실행이 깨지므로 항상 LF 유지
+*.sh text eol=lf
