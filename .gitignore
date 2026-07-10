@@ -16,3 +16,7 @@ __pycache__/
 
 # Node
 node_modules/
+
+# 실양식 원본 (내부 양식 - 커밋 금지)
+/실양식.hwpx
+/(양식) 문서 템플릿_*.hwpx
