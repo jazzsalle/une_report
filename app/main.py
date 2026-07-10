@@ -21,12 +21,19 @@ async def lifespan(app: FastAPI):
 def create_app() -> FastAPI:
     app = FastAPI(title="hwpx-chat-editor", lifespan=lifespan)
 
-    from app.api import routes_auth, routes_chat, routes_documents, routes_health
+    from app.api import (
+        routes_auth,
+        routes_chat,
+        routes_documents,
+        routes_health,
+        routes_sessions,
+    )
 
     app.include_router(routes_health.router, prefix="/api")
     app.include_router(routes_auth.router, prefix="/api")
     app.include_router(routes_documents.router, prefix="/api")
     app.include_router(routes_chat.router, prefix="/api")
+    app.include_router(routes_sessions.router, prefix="/api")
 
     # 프론트 빌드 산출물 서빙 (web/dist가 있을 때만)
     dist = Path(__file__).resolve().parent.parent / "web" / "dist"
