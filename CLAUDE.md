@@ -10,10 +10,18 @@
 
 ## 작업 방식
 
+- 오픈소스 원본을 다운로드(클론)할 때는 반드시 `hwpx_sources/` 폴더에 적재하여 활용한다. 이 폴더는 참조용이므로 git에 커밋하지 않는다(.gitignore 등재).
+
 - Phase 실행은 `/phase-run N` 스킬로 한다 (planner → generator 병렬 → evaluator 사이클).
 - Phase 합격 기준은 `evaluation_criteria.md`에 있다.
 - 세션을 마칠 때는 `/handoff`, 이어서 할 때는 `/resume-work` 또는 세션 시작 시 자동 주입되는 `PROGRESS.md`를 따른다.
-- 빌드/실행 명령: Phase 3(스캐폴딩) 완료 후 이 섹션에 기록한다.
+- 빌드/실행 명령 (Windows 기준, 저장소 루트에서):
+  - 백엔드 의존성: `python -m venv .venv` → `.venv/Scripts/python -m pip install -r requirements.txt`
+  - 백엔드 실행: `.venv/Scripts/python -m uvicorn app.main:app --port 8080`
+  - 프론트 빌드: `cd web && npm install && npm run build` (산출물 web/dist를 백엔드가 서빙)
+  - 프론트 개발 서버: `cd web && npm run dev` (5173 포트, /api는 8080으로 프록시)
+  - 테스트: `.venv/Scripts/python -m pytest`
+  - 환경설정: `.env.example`을 `.env`로 복사 (테스트 계정 등)
 
 ## Phase
 

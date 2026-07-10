@@ -1,2 +1,18 @@
 # 개인 로컬 설정 (기기별로 다름)
 .claude/settings.local.json
+
+# 오픈소스 참조 클론 적재 폴더 (커밋 금지)
+hwpx_sources/
+
+# 런타임 데이터·비밀
+data/
+.env
+
+# Python
+__pycache__/
+*.pyc
+.venv/
+.pytest_cache/
+
+# Node
+node_modules/
