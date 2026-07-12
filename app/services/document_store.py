@@ -26,7 +26,9 @@ from app.core.hwpx import (
     apply_edits,
     collect_placeholders,
     extract_hwpx,
+    find_header_file,
     find_section_files,
+    guide_char_pr_ids,
     hwpx_to_html,
     parse_section,
     validate_hwpx,
@@ -92,6 +94,8 @@ class DocumentStore:
         """hwpx를 임시 해제해 섹션별 (전역 id offset, 노드 목록)을 반환한다.
 
         전역 id = 섹션 로컬 id + 이전 섹션들의 노드 수 합 (M1 순번 규칙).
+        header.xml의 가이드 charPr(파란 기울임체)를 해석해 각 노드의
+        guide_text도 채운다 (B1 — 실양식 작성 가이드 인지).
         """
         if not hwpx_path.is_file():
             raise KeyError(f"hwpx 파일이 없음: {hwpx_path.name}")
@@ -99,9 +103,11 @@ class DocumentStore:
         with tempfile.TemporaryDirectory(prefix="docstore_", ignore_cleanup_errors=True) as tmp:
             extract_dir = Path(tmp) / "hwpx"
             extract_hwpx(hwpx_path, extract_dir)
+            header = find_header_file(extract_dir)
+            guide_ids = guide_char_pr_ids(header) if header else set()
             offset = 0
             for sf in find_section_files(extract_dir):
-                nodes, _tree, _parent_map, _t_ns = parse_section(sf)
+                nodes, _tree, _parent_map, _t_ns = parse_section(sf, guide_char_ids=guide_ids)
                 out.append((offset, nodes))
                 offset += len(nodes)
         return out
@@ -179,27 +185,54 @@ class DocumentStore:
         return {"html": html, "page_count": page_count, "version": version}
 
     def get_nodes(self, user_id: int, document_id: str) -> list[dict]:
-        """현재 버전의 편집 대상 노드 목록 (전역 id, LLM 컨텍스트·직접 편집용)."""
+        """현재 버전의 편집 대상 노드 목록 (전역 id, LLM 컨텍스트·직접 편집용).
+
+        표 셀에는 table_idx/row/col/row_span/col_span을 포함해(B2) 프롬프트가
+        표를 그리드로 직렬화할 수 있게 한다.
+        """
         doc = self._get_doc(user_id, document_id)
         src = self._version_hwpx(document_id, doc["current_version"])
         result: list[dict] = []
         for offset, nodes in self._sections_with_offsets(src):
             for n in nodes:
-                result.append({
+                item = {
                     "id": offset + n.id,
                     "text": n.text,
                     "type": _NODE_TYPE_MAP.get(n.type, n.type),
-                })
+                }
+                if n.type == "table_cell":
+                    item.update({
+                        "table_idx": n.table_idx,
+                        "row": n.row,
+                        "col": n.col,
+                        "row_span": n.cell_row_span,
+                        "col_span": n.cell_col_span,
+                    })
+                result.append(item)
         return result
 
+    # get_placeholders의 kind=guide token 길이 상한 (가이드 문구가 긴 경우 요약)
+    _GUIDE_TOKEN_MAX = 120
+
     def get_placeholders(self, user_id: int, document_id: str) -> list[dict]:
-        """현재 버전에 남아 있는 placeholder 표식 목록 (미채움 검증용)."""
+        """현재 버전에 남아 있는 채움 대상 표식 목록 (미채움 검증 겸용).
+
+        - kind="pattern": regex placeholder ([기관명], YYYY 등)
+        - kind="guide"  : 파란 기울임체 작성 가이드 문구 (B1). 문구 자체가
+          작성 지시이므로 token으로 그대로 노출한다. 채움 후 재호출하면
+          가이드 잔존 검사("가이드 삭제 후 제출" 요건)를 겸한다.
+        """
         doc = self._get_doc(user_id, document_id)
         src = self._version_hwpx(document_id, doc["current_version"])
-        hits = []
+        out: list[dict] = []
         for offset, nodes in self._sections_with_offsets(src):
-            hits.extend(collect_placeholders(nodes, id_offset=offset))
-        return [{"id": h.id, "token": h.text} for h in hits]
+            for h in collect_placeholders(nodes, id_offset=offset):
+                out.append({"id": h.id, "token": h.text, "kind": "pattern"})
+            for n in nodes:
+                if n.guide_text:
+                    token = n.guide_text[:self._GUIDE_TOKEN_MAX]
+                    out.append({"id": offset + n.id, "token": token, "kind": "guide"})
+        return out
 
     def get_current_version(self, user_id: int, document_id: str) -> int:
         """문서의 현재 버전 번호 (버전 핀 사전 검사용)."""

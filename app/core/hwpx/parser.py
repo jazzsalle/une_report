@@ -87,8 +87,21 @@ def _attr_int(elem: ET.Element, key_substr: str, default: int) -> int:
     return default
 
 
+def _collect_guide_text(runs: list[ET.Element], guide_char_ids: set[str]) -> str:
+    """가이드 스타일(charPrIDRef ∈ guide_char_ids) run들의 텍스트를 이어붙인다."""
+    parts: list[str] = []
+    for run in runs:
+        if run.get("charPrIDRef") not in guide_char_ids:
+            continue
+        for child in run:
+            if tag(child) == "t" and child.text:
+                parts.append(child.text)
+    return "".join(parts).strip()
+
+
 def parse_section(
     section_path: str | Path,
+    guide_char_ids: set[str] | None = None,
 ) -> tuple[list[TextNode], ET.ElementTree, dict[ET.Element, ET.Element], str]:
     """섹션 XML을 파싱해 (노드 목록, ET 트리, 부모 맵, t 네임스페이스)를 반환한다.
 
@@ -96,6 +109,8 @@ def parse_section(
     - tree: 원본 ElementTree (apply_edits 후 저장용)
     - parent_map: {자식 Element: 부모 Element} (요소 삽입·삭제 시 사용)
     - t_ns: hp:t 요소의 "{URI}" 네임스페이스 접두부 (새 t 요소 생성용)
+    - guide_char_ids: 작성 가이드 charPr id 집합(styles.guide_char_pr_ids).
+      주어지면 각 노드의 guide_text를 채운다 (None이면 기존 동작 그대로).
     """
     section_path = str(section_path)
     register_namespaces(section_path)
@@ -147,7 +162,7 @@ def parse_section(
                         col_span = _attr_int(cc, "colSpan", 1)
                         row_span = _attr_int(cc, "rowSpan", 1)
 
-                _runs, t_elems = collect_runs_and_texts(tc)
+                runs, t_elems = collect_runs_and_texts(tc)
                 raw_text = _joined_text(t_elems)
                 nodes.append(TextNode(
                     id=next_id[0], type="table_cell",
@@ -158,6 +173,7 @@ def parse_section(
                     cell_height_mm=round(cell_height / HWP_UNITS_PER_MM) if cell_height > 0 else 0,
                     t_elems=t_elems,
                     elem=tc,
+                    guide_text=_collect_guide_text(runs, guide_char_ids) if guide_char_ids else "",
                 ))
                 next_id[0] += 1
 
@@ -181,6 +197,7 @@ def parse_section(
             text=raw_text.strip(), raw_text=raw_text,
             t_elems=t_elems,
             elem=p_elem,
+            guide_text=_collect_guide_text(runs, guide_char_ids) if guide_char_ids else "",
         ))
         next_id[0] += 1
 

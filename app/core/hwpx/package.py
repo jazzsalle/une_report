@@ -56,6 +56,15 @@ def find_section_files(extract_dir: str | Path) -> list[Path]:
     return sorted(sections, key=_section_no)
 
 
+def find_header_file(extract_dir: str | Path) -> Path | None:
+    """해제 디렉터리에서 header.xml 경로를 반환한다 (없으면 None).
+
+    표준 배치는 Contents/header.xml이며, 스타일 해석(styles.py)의 입력이 된다.
+    """
+    header = Path(extract_dir) / "Contents" / "header.xml"
+    return header if header.is_file() else None
+
+
 def _is_signature_entry(rel: str) -> bool:
     """META-INF 아래 서명·암호화 관련 엔트리인지 판정한다."""
     parts = rel.lower().split("/")

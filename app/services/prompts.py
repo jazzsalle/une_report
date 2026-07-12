@@ -40,18 +40,46 @@ RETRY_PREFIX = (
 # ── 공통 포매터 ─────────────────────────────────────────────────
 
 def format_nodes(nodes: list[dict]) -> str:
-    """문서 노드 목록을 'id [유형] 텍스트' 한 줄 형식으로 나열한다."""
-    lines = []
+    """문서 노드를 본문 줄 + 표별 그리드로 직렬화한다 (B2).
+
+    - 본문: "id [유형] 텍스트" (종전 형식 유지)
+    - 표 셀: "[표 N]" 헤더 아래 "(행,열) id: 텍스트" — 같은 행·열의 라벨이
+      인접해 나열되므로 빈 셀이 어느 라벨의 값 칸인지 LLM에게 드러난다.
+      빈 셀은 "(빈 칸)"으로 표기한다. (셀 노드는 파서 순번 규칙상 같은 표
+      단위로 연속되므로 table_idx 변화 지점에 헤더만 끼워 넣으면 된다)
+    """
+    lines: list[str] = []
+    current_table = None
     for n in nodes:
-        node_type = n.get("type") or "para"
-        text = (n.get("text") or "").replace("\n", " ")
-        lines.append(f"{n['id']} [{node_type}] {text}")
+        table_idx = n.get("table_idx")
+        if table_idx is None:
+            current_table = None
+            node_type = n.get("type") or "para"
+            text = (n.get("text") or "").replace("\n", " ")
+            lines.append(f"{n['id']} [{node_type}] {text}")
+            continue
+        if table_idx != current_table:
+            current_table = table_idx
+            lines.append(f"[표 {table_idx}]")
+        text = (n.get("text") or "").replace("\n", " ").strip() or "(빈 칸)"
+        span = ""
+        if (n.get("row_span") or 1) > 1 or (n.get("col_span") or 1) > 1:
+            span = f" 병합{n.get('row_span') or 1}x{n.get('col_span') or 1}"
+        lines.append(f"({n.get('row')},{n.get('col')}){span} {n['id']}: {text}")
     return "\n".join(lines)
 
 
 def format_placeholders(placeholders: list[dict]) -> str:
-    """placeholder 목록을 'id: 표식' 한 줄 형식으로 나열한다."""
-    return "\n".join(f"{p['id']}: {p.get('token', '')}" for p in placeholders)
+    """채움 대상 목록을 'id [표식|지시]: 내용' 형식으로 나열한다.
+
+    kind="guide"(파란 기울임체 작성 가이드)는 [지시]로 구분해, 문구 자체가
+    작성 지시임을 LLM에게 알린다.
+    """
+    lines = []
+    for p in placeholders:
+        label = "지시" if p.get("kind") == "guide" else "표식"
+        lines.append(f"{p['id']} [{label}]: {p.get('token', '')}")
+    return "\n".join(lines)
 
 
 # ── 의도 분류 (M4-1) ────────────────────────────────────────────
@@ -90,7 +118,7 @@ def build_turn_prompt(
     JSON 파싱 실패 시 오케스트레이터가 기존 분리 경로(분류→작업)로 폴백한다.
     """
     ph_section = (
-        "채움 대상 placeholder 목록 (형식: 노드 id: 표식):\n"
+        "채움 대상 목록 (형식: 노드 id [표식|지시]: 내용):\n"
         f"{format_placeholders(placeholders)}\n\n"
         if placeholders
         else ""
@@ -105,7 +133,7 @@ def build_turn_prompt(
         "→ intent만 정확히 답하고 edits는 빈 배열로 두어라 (별도 파이프라인이 처리한다).\n"
         '- "query": 그 외 일반 질문이나 문서 내용에 대한 질문 (문서를 바꾸지 않음) '
         "→ reply에 답변을 쓰고 edits는 빈 배열로 두어라.\n\n"
-        "문서 노드 목록 (형식: id [유형] 텍스트):\n"
+        "문서 노드 목록 (본문: id [유형] 텍스트 / 표: (행,열) id: 텍스트):\n"
         f"{format_nodes(nodes)}\n\n"
         f"{ph_section}"
         f"사용자 발화:\n{message}\n\n"
@@ -125,7 +153,7 @@ def build_edit_prompt(message: str, nodes: list[dict]) -> str:
     return (
         "당신은 hwpx 문서 편집 도우미다. 아래 문서 노드 목록에서 사용자 지시에 "
         "해당하는 노드만 골라 새 텍스트를 만들어라.\n\n"
-        "문서 노드 목록 (형식: id [유형] 텍스트):\n"
+        "문서 노드 목록 (본문: id [유형] 텍스트 / 표: (행,열) id: 텍스트):\n"
         f"{format_nodes(nodes)}\n\n"
         f"사용자 지시:\n{message}\n\n"
         "규칙:\n"
@@ -144,16 +172,16 @@ def build_fill_prompt(
 ) -> str:
     """placeholder 포함 노드 청크 → 채움 edits JSON을 요청하는 프롬프트."""
     ph_section = (
-        "채움 대상 placeholder 목록 (형식: 노드 id: 표식):\n"
+        "채움 대상 목록 (형식: 노드 id [표식|지시]: 내용):\n"
         f"{format_placeholders(placeholders)}\n\n"
         if placeholders
         else ""
     )
     return (
         "당신은 hwpx 양식 문서를 채우는 도우미다. 아래 노드들의 placeholder"
-        "([기관명], <담당자>, YYYY년, ○○ 등)를 사용자 제공 내용에 맞는 실제 값으로 "
-        "바꾼 새 텍스트를 만들어라.\n\n"
-        "문서 노드 목록 (형식: id [유형] 텍스트):\n"
+        "([기관명], <담당자>, YYYY년, ○○ 등)와 빈 칸을 사용자 제공 내용에 맞는 "
+        "실제 값으로 채운 새 텍스트를 만들어라.\n\n"
+        "문서 노드 목록 (본문: id [유형] 텍스트 / 표: (행,열) id: 텍스트):\n"
         f"{format_nodes(nodes)}\n\n"
         f"{ph_section}"
         f"사용자 요청·제공 내용:\n{message}\n\n"
@@ -161,9 +189,13 @@ def build_fill_prompt(
         "- 위 노드 목록의 모든 id에 대해 placeholder를 해소한 edits 항목을 만들어라.\n"
         "- new_text는 노드의 전체 텍스트를 대체하므로, placeholder가 아닌 부분은 "
         "원문을 유지한 채 표식만 바꿔라.\n"
+        "- [지시]가 붙은 노드는 그 지시문(작성 가이드)이 요구하는 내용·분량·형식에 "
+        "맞춰 실제 내용을 작성하고, 지시문 자체는 new_text에 남기지 마라.\n"
+        "- 표의 (빈 칸) 셀은 같은 행·열의 라벨을 보고 그 라벨에 해당하는 값을 채워라. "
+        "라벨 셀 자체(항목명)는 바꾸지 마라.\n"
         "- 분량: 서술형 문단([유형] para)의 new_text는 공문서 문체로 3~5문장의 "
-        "완결된 서술로 작성하고, 표 셀([유형] cell)은 1~2문장(또는 항목명·수치 등 "
-        "셀 성격에 맞는 값)으로 간결하게 작성하라. 한두 구절로 얼버무리지 마라.\n"
+        "완결된 서술로 작성하고, 표 셀은 1~2문장(또는 항목명·수치 등 셀 성격에 "
+        "맞는 값)으로 간결하게 작성하라. 한두 구절로 얼버무리지 마라.\n"
         "- 사용자 내용만으로 알 수 없는 값은 문맥상 자연스러운 초안으로 채우고 "
         "notes에 확인 필요 항목으로 적어라.\n"
         "- 다른 설명 없이 아래 형식의 JSON 객체 하나만 출력하라.\n\n"

@@ -19,6 +19,8 @@ class TextNode:
       apply_edits 단계에서 이 참조를 통해 원본 트리를 부분 수정한다.
     - elem: 노드의 컨테이너 요소 참조(table_cell이면 hp:tc, body_text면 hp:p).
       t_elems가 비어 있는 빈 노드에 hp:t를 생성 삽입할 때 앵커로 쓴다.
+    - guide_text: 작성 가이드 스타일(파란 기울임체 charPr, styles.py 판정)
+      run들의 텍스트. 비어 있지 않으면 이 노드는 채움 대상 지시문을 담고 있다.
     """
 
     id: int
@@ -34,6 +36,7 @@ class TextNode:
     cell_height_mm: int = 0
     t_elems: list[ET.Element] = field(default_factory=list)
     elem: ET.Element | None = None
+    guide_text: str = ""
 
 
 @dataclass

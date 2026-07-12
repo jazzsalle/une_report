@@ -47,7 +47,8 @@ def test_stale_base_version_rejected_before_llm(env, demo_form_hwpx):
 def test_matching_base_version_applies_edit(env, demo_form_hwpx):
     """현재 버전과 일치하는 base_version이면 종전대로 편집이 적용된다."""
     client, app, store, token, user_id, doc_id = _setup(env, demo_form_hwpx, "verpin-ok")
-    target = store.get_nodes(user_id, doc_id)[0]["id"]
+    # 텍스트 있는 노드를 대상 (빈 노드는 B3 프롬프트 축소로 edit 대상에서 제외됨)
+    target = next(n for n in store.get_nodes(user_id, doc_id) if n["text"])["id"]
     backend = FakeBackend([
         json.dumps({
             "intent": "edit", "reply": "수정",
@@ -65,7 +66,7 @@ def test_matching_base_version_applies_edit(env, demo_form_hwpx):
 def test_missing_base_version_keeps_legacy_behavior(env, demo_form_hwpx):
     """base_version 없는 요청은 종전 동작(항상 최신 버전에 적용)을 유지한다."""
     client, app, store, token, user_id, doc_id = _setup(env, demo_form_hwpx, "verpin-legacy")
-    target = store.get_nodes(user_id, doc_id)[0]["id"]
+    target = next(n for n in store.get_nodes(user_id, doc_id) if n["text"])["id"]
     backend = FakeBackend([
         json.dumps({
             "intent": "edit", "reply": "수정",

@@ -10,8 +10,15 @@ from .chunker import chunk_nodes
 from .edits import EditResult, apply_edits, normalize_edit_id
 from .html import HtmlResult, hwpx_to_html
 from .models import HWP_UNITS_PER_MM, TextNode, ValidationResult
-from .package import extract_hwpx, find_section_files, repack_hwpx, validate_hwpx
+from .package import (
+    extract_hwpx,
+    find_header_file,
+    find_section_files,
+    repack_hwpx,
+    validate_hwpx,
+)
 from .parser import collect_runs_and_texts, parse_section
+from .styles import guide_char_pr_ids
 from .placeholder import (
     PLACEHOLDER_PATTERNS,
     PlaceholderHit,
@@ -23,12 +30,15 @@ from .placeholder import (
 __all__ = [
     # package (zip 계층)
     "extract_hwpx",
+    "find_header_file",
     "find_section_files",
     "repack_hwpx",
     "validate_hwpx",
     # parser
     "parse_section",
     "collect_runs_and_texts",
+    # styles
+    "guide_char_pr_ids",
     # html
     "hwpx_to_html",
     "HtmlResult",

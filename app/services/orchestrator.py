@@ -15,8 +15,11 @@ DB·파일·FastAPI를 만지지 않는 순수 서비스 계층으로, `LLMBacke
   `{"reply","edits","notes"}` JSON 수신 → normalize_edit_id 정수화 →
   문서에 없는 id 제거(notes 기록). 파싱 실패 시 1회 재요청, 재실패면
   LlmJsonParseError 전파.
-- M4-3 채움: placeholder 포함 노드를 FILL_CHUNK_SIZE 청크로 나눠
-  청크별 호출 → edits 병합 (중복 id는 마지막 승리).
+- M4-3 채움: 대상 = placeholder/가이드 노드 + 그 노드가 속한 표의 빈 셀
+  (B3). 표 경계를 우선하는 청크로 나눠 청크별 호출 → edits 병합
+  (중복 id는 마지막 승리).
+- 프롬프트 규모 제어 (B3): edit·query 프롬프트는 selection이 없으면
+  텍스트 없는 노드를 제외한 축소 목록을 쓴다.
 - query: backend.chat 응답을 그대로 reply로.
 """
 from dataclasses import dataclass
@@ -71,20 +74,45 @@ class Orchestrator:
             return await self._run_query(token, message, history)
 
         nodes = self._filter_selection(doc_nodes, selection)
+        # edit·query 프롬프트용 축소 목록 (B3 — 빈 노드 제외로 규모 제어)
+        prompt_nodes = self._prompt_nodes(nodes, placeholders or [], selection)
 
         # 병합 경로: 분류+응답을 1회 호출로 (실패 시 None → 분리 경로 폴백)
         combined = await self._try_combined_turn(
-            token, message, history, nodes, placeholders or []
+            token, message, history, nodes, prompt_nodes, placeholders or []
         )
         if combined is not None:
             return combined
 
         intent = await self._classify_intent(token, message, history, placeholders)
         if intent == "edit":
-            return await self._run_edit(token, message, history, nodes)
+            return await self._run_edit(token, message, history, prompt_nodes)
         if intent == "fill":
             return await self._run_fill(token, message, history, nodes, placeholders or [])
         return await self._run_query(token, message, history)
+
+    @staticmethod
+    def _prompt_nodes(
+        nodes: list[dict], placeholders: list[dict], selection: list[int] | None
+    ) -> list[dict]:
+        """edit·query 프롬프트에 실을 노드 (B3 — 프롬프트 규모 제어).
+
+        selection이 있으면 사용자가 빈 셀을 직접 지목했을 수 있으므로 전부
+        유지한다. 없으면 텍스트 없는 노드를 제외하되, placeholder/가이드가
+        달린 노드는 남긴다 (실양식은 빈 셀이 68%라 전체 나열 시 프롬프트가
+        10만 자를 넘는다 — 채움은 _run_fill이 별도 대상 선정으로 처리).
+        """
+        if selection:
+            return nodes
+        keep_ids: set[int] = set()
+        for p in placeholders:
+            sid = Orchestrator._safe_id(p.get("id"))
+            if sid is not None:
+                keep_ids.add(sid)
+        return [
+            n for n in nodes
+            if (n.get("text") or "").strip() or int(n["id"]) in keep_ids
+        ]
 
     # ── 분류+응답 병합 경로 (턴당 LLM 1회) ─────────────────────
 
@@ -94,6 +122,7 @@ class Orchestrator:
         message: str,
         history: list[dict],
         nodes: list[dict],
+        prompt_nodes: list[dict],
         placeholders: list[dict],
     ) -> TurnResult | None:
         """병합 프롬프트 1회로 분류+응답을 시도한다. 폴백이 필요하면 None.
@@ -101,18 +130,20 @@ class Orchestrator:
         - edit  → edits 검증 후 즉시 TurnResult (1회 종결)
         - query → reply 그대로 TurnResult (1회 종결)
         - fill  → 분류 결과만 사용하고 기존 청크 채움 파이프라인 실행
+          (프롬프트·edits 검증은 축소 목록 prompt_nodes 기준, fill 위임은
+          빈 셀을 포함해야 하므로 전체 nodes 기준)
         - JSON 파싱 실패·비정상 intent·빈 query 답변 → None (분리 경로 폴백)
         LLM 연결 오류(LlmError 계열)는 종전과 동일하게 상위로 전파한다.
         """
-        if not nodes:
+        if not prompt_nodes:
             return None  # 편집 대상 없음 — 분리 경로의 안내 메시지에 맡긴다
         # placeholder도 노드 범위(selection 필터 후)로 좁힌다 — 프롬프트에
         # 선택 밖 노드의 표식이 새어 들어가지 않게 (edits 검증과 동일 기준)
-        node_ids = {int(n["id"]) for n in nodes}
-        placeholders = [
+        node_ids = {int(n["id"]) for n in prompt_nodes}
+        prompt_placeholders = [
             p for p in placeholders if self._safe_id(p.get("id")) in node_ids
         ]
-        prompt = prompts.build_turn_prompt(message, nodes, placeholders)
+        prompt = prompts.build_turn_prompt(message, prompt_nodes, prompt_placeholders)
         raw = await self.backend.chat(prompt, history, token=token)
         try:
             data = parse_llm_json(raw)
@@ -130,8 +161,7 @@ class Orchestrator:
             if not reply:
                 return None  # 답변 없는 query는 분리 경로에서 재시도
             return TurnResult(intent="query", reply=reply, edits=[])
-        valid_ids = {int(n["id"]) for n in nodes}
-        edits, local_notes = self._extract_edits(data, valid_ids)
+        edits, local_notes = self._extract_edits(data, node_ids)
         reply = self._extract_reply(data, default=f"{len(edits)}개 항목을 수정했습니다.")
         return TurnResult(
             intent="edit",
@@ -208,18 +238,35 @@ class Orchestrator:
         nodes: list[dict],
         placeholders: list[dict],
     ) -> TurnResult:
-        # placeholder가 있는 노드 위주로 대상 축소 (없으면 전체 노드)
+        # 대상 선정 (B3): placeholder/가이드 노드 + 그 노드가 속한 표의 빈 셀.
+        # (실양식은 라벨 옆 빈 셀이 채움 대상인데 표식이 없어 안 잡히므로,
+        #  표식이 있는 표의 빈 셀까지 대상으로 넓힌다. 표식이 하나도 없으면
+        #  종전대로 전체 노드.)
         ph_ids: set[int] = set()
         for p in placeholders:
             try:
                 ph_ids.add(normalize_edit_id(p["id"]))
             except (ValueError, KeyError):
                 continue
-        targets = [n for n in nodes if int(n["id"]) in ph_ids] if ph_ids else list(nodes)
+        if ph_ids:
+            ph_tables = {
+                n["table_idx"] for n in nodes
+                if n.get("table_idx") is not None and int(n["id"]) in ph_ids
+            }
+            targets = [
+                n for n in nodes
+                if int(n["id"]) in ph_ids
+                or (
+                    n.get("table_idx") in ph_tables
+                    and not (n.get("text") or "").strip()
+                )
+            ]
+        else:
+            targets = list(nodes)
 
         merged: dict[int, str] = {}
         notes_all: list[str] = []
-        for chunk in self._chunks(targets, FILL_CHUNK_SIZE):
+        for chunk in self._fill_chunks(targets, FILL_CHUNK_SIZE):
             chunk_ids = {int(n["id"]) for n in chunk}
             chunk_ph = [
                 p for p in placeholders
@@ -344,3 +391,39 @@ class Orchestrator:
     @staticmethod
     def _chunks(items: list[dict], size: int) -> list[list[dict]]:
         return [items[i:i + size] for i in range(0, len(items), size)]
+
+    @classmethod
+    def _fill_chunks(cls, targets: list[dict], size: int) -> list[list[dict]]:
+        """표 불분할을 보장하는 청킹 (B3).
+
+        문서 순서를 유지한 채 같은 표의 셀들을 그룹으로 묶은 뒤, 그룹들을
+        size 상한까지 greedy하게 한 청크에 담는다. size를 넘는 큰 표만
+        행 순서를 유지한 채 내부 분할한다. 즉 표가 프롬프트 중간에서 끊겨
+        라벨-값 문맥이 사라지는 일은 없고, 작은 양식은 종전처럼 소수의
+        청크(호출)로 처리된다.
+        """
+        groups: list[tuple[object, list[dict]]] = []
+        for n in targets:
+            key = n.get("table_idx") if n.get("table_idx") is not None else "body"
+            if groups and groups[-1][0] == key:
+                groups[-1][1].append(n)
+            else:
+                groups.append((key, [n]))
+
+        chunks: list[list[dict]] = []
+        current: list[dict] = []
+        for _key, items in groups:
+            if len(items) > size:
+                # 상한을 넘는 큰 표: 단독으로 내부 분할 (다른 그룹과 섞지 않음)
+                if current:
+                    chunks.append(current)
+                    current = []
+                chunks.extend(cls._chunks(items, size))
+                continue
+            if len(current) + len(items) > size:
+                chunks.append(current)
+                current = []
+            current.extend(items)
+        if current:
+            chunks.append(current)
+        return chunks
