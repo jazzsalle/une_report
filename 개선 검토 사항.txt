@@ -1,0 +1,142 @@
+개선 검토 사항
+1. 빈 셀 편집 불가가 실양식에서 병목이 될 가능성. edits.py에서 hp:t가 없는 노드는 skip 처리되는데, 실제 재난 계획서 양식은 빈 표 셀이 많을 겁니다. fill 파이프라인이 정작 채워야 할 셀을 못 채우는 상황이 나올 수 있어요. parse_section이 이미 t_ns(네임스페이스)와 parent_map을 반환하고 있으니, 빈 셀에 hp:run + hp:t를 생성 삽입하는 확장이 자연스럽습니다 — 셀 내 기존 subList/p 구조의 paraPr 참조를 복제하면 서식도 유지됩니다. 실양식 입수 전에 이 케이스를 미리 뚫어두길 권합니다.
+2. 전역 id의 위치 기반 취약성. id가 파싱 순번이라 문서 구조가 바뀌면 전부 밀립니다. 현재는 텍스트 교체만 하니 구조 불변이 유지되지만, 향후 문단 추가/삭제(개행→문단 분할 확장 포함)를 넣는 순간 "미리보기 시점 id ≠ 적용 시점 id" 경합이 생깁니다. edits에 버전 번호를 함께 실어 서버가 해당 버전 기준으로 적용하는 버전 핀 방식을 지금 계약(edits[{id,new_text}])에 미리 넣어두면 확장이 안전해집니다.
+3. 턴당 LLM 2회 호출 지연. 의도 분류 1회 + 본 작업 1회 구조라 체감 지연이 두 배입니다. 분류와 편집을 단일 프롬프트로 합쳐 {"intent", "reply", "edits"}를 한 번에 받고, JSON 실패 시에만 분리 폴백하는 방식이면 대부분의 턴에서 절반으로 줄일 수 있어요. SSE 스트리밍 UI 전환(향후 과제 4번)과 함께 하면 효과가 큽니다.
+4. 보안 — 원격 push 관련. 지금 GitHub에 올라간 상태인데 확인할 것 세 가지: (a) 개발 배경 및 목적.txt는 zip에 없으니 제거된 것으로 보이지만, git 히스토리에 한 번이라도 커밋됐다면 히스토리에 남아 있습니다 — git log --all --oneline -- "개발*"로 확인하고, 있다면 filter-repo로 정리 필요. (b) app_tokens가 만료 없이 평문 저장이고 로그아웃/폐기 API가 없어 토큰이 사실상 영구 유효합니다 — TTL 컬럼 + 검증 시 만료 체크만 넣어도 충분합니다. (c) rag_jwt도 평문 저장인데 사내망 PoC 전제면 수용 가능하나 limitations에 명시해두면 좋겠습니다.
+5. 사소한 것들. web/dist 빌드 산출물이 커밋되어 있는데 CI 없이 배포 편의를 위한 의도라면 괜찮지만, 소스와 dist가 어긋나는 사고가 흔하니 .gitignore 처리 + 배포 시 빌드를 권장합니다. docx의 "표 먼저, 문단 나중" 순서 문제는 파서 순번 규칙 때문이라 문서화로 충분히 커버됐고요Claude의 응답이 중단되었습니다.코드 제시 방식과 파일 구조를 검토했습니다코드 제시 방식과 파일 구조를 검토했습니다담당자에게 전달할 수 있는 형태로, 요청/서버/클라이언트 3단 샘플입니다.
+1. 목표 — /chat/ 요청이 이렇게 바뀌면 됩니다
+jsonPOST /chat/
+{
+  "query": "2페이지 과제명을 수정해줘",
+  "model_key": "qwen3-coder-next",
+  "history": [],
+  "stream": false,
+  "guided_json": {
+    "type": "object",
+    "properties": {
+      "reply": {"type": "string"},
+      "edits": {
+        "type": "array",
+        "items": {
+          "type": "object",
+          "properties": {
+            "id": {"type": "integer"},
+            "new_text": {"type": "string"}
+          },
+          "required": ["id", "new_text"]
+        }
+      }
+    },
+    "required": ["reply", "edits"]
+  }
+}
+2. 서버 측 수정 (UNI RAG 담당자 몫) — 필드 하나 통과
+vLLM의 OpenAI 호환 엔드포인트는 response_format으로 JSON Schema 강제를 지원하므로, /chat/ 핸들러에서 받은 값을 vLLM 호출에 얹기만 하면 됩니다:
+python# UNI RAG /chat/ 핸들러 내부 (개념 샘플)
+class ChatRequest(BaseModel):
+    query: str
+    model_key: str
+    history: list = []
+    stream: bool = False
+    guided_json: dict | None = None   # ← 추가 필드
+
+def build_vllm_payload(req: ChatRequest, messages):
+    payload = {
+        "model": req.model_key,
+        "messages": messages,
+        "stream": req.stream,
+    }
+    if req.guided_json:
+        payload["response_format"] = {   # vLLM 0.6+ OpenAI 호환 방식
+            "type": "json_schema",
+            "json_schema": {"name": "edit_spec", "schema": req.guided_json},
+        }
+        # (구버전 vLLM이면 대신: payload["guided_json"] = req.guided_json)
+    return payload
+vLLM 버전에 따라 response_format 방식(신)과 guided_json extra body 방식(구)이 갈리니, 서버의 vLLM 버전 확인을 요청 사항에 포함하세요. RAG 검색 파이프라인은 건드리지 않고 최종 생성 호출에만 얹는 변경입니다.
+3. 클라이언트 측 — 사실상 무수정
+_chat_body가 body.update(opts)로 추가 옵션을 병합하니 호출부에서 넘기기만 하면 됩니다:
+python# app/services/orchestrator.py 쪽 호출부
+from pydantic import BaseModel
+
+class Edit(BaseModel):
+    id: int
+    new_text: str
+
+class EditSpec(BaseModel):
+    reply: str
+    edits: list[Edit]
+
+raw = await self.backend.chat(
+    prompt, history, token=token,
+    guided_json=EditSpec.model_json_schema(),  # ← SSOT에서 자동 생성
+)
+지난번 말한 Single Source of Truth가 이 EditSpec Pydantic 모델입니다 — 프롬프트 예시 렌더링, guided_json 스키마, 응답 검증이 전부 여기서 파생되죠. 담당자에게는 1번 요청 예시 + "이 필드를 vLLM 생성 호출의 response_format으로 전달해달라" 한 줄이면 협의가 시작될 겁니다.한글 템플릿 샘플 구성 및 이미지 참조 검증 완료한글 템플릿 샘플 구성 및 이미지 참조 검증 완료샘플 템플릿을 만들고, 프로젝트의 M1 파이프라인으로 실제 검증까지 통과시켰습니다. 재현용 생성 스크립트도 함께 드립니다.
+템플릿 구성 — 재난대응 안전계획서 형태로, 논의했던 테스트 케이스를 전부 포함:
+
+번호 문단(1.~6. 헤딩 + NumberedList 4항목)
+표 2개(헤더 음영, 시설 현황 5행 / 비상연락 3행)
+placeholder 이미지 2장(회색 박스, BinData/BIN0001~0002.png로 임베드 — 이미지 교체 테스트용)
+placeholder 4유형 전부: [기관명] bracket 9개, <담당자 이름> angle 3개, YYYY년 MM월 DD일 date_stub, ○○·TBD filler
+비상연락 표 3행에 완전 빈 셀 2개(빈 셀 편집 테스트용)
+
+검증 결과 — 여러분의 M1 코드에 직접 통과시킨 실측입니다:
+
+validate_hwpx: ok=True (zip·mimetype·XML 파스 전항목)
+parse_section: 57노드 (문단 23 + 표셀 34), data-id 불변식 유지 — HTML 변환 시 data-id 57개 정확 일치, <img> 2개 렌더
+apply_edits 라운드트립: [시설명 입력] 셀 편집 → applied=[13] → 재검증 ok=True
+
+검증 중 의미 있는 발견 두 가지:
+
+빈 셀 4개가 전부 hp:t를 갖고 있습니다 (hp:t 없는 셀 0개). python-hwpx가 빈 셀에도 run+t를 생성해주기 때문에, 이 템플릿에서는 지난번 지적한 "빈 셀 편집 불가" 제약이 발생하지 않아요. 즉 템플릿을 python-hwpx로 제작하면 그 제약을 우회할 수 있고, 실양식(한컴에서 직접 만든 것)에서만 문제가 남습니다.
+캡션의 [그림 1], [그림 2]가 bracket placeholder로 오탐됩니다. 그림 번호는 채움 대상이 아니니 placeholder.py에 [그림 N], [표 N] 제외 패턴을 추가하는 게 좋겠습니다.
+
+한 가지 유의: 자동 검증은 구조 수준까지이고(hard_gates 전부 pass), 한컴오피스에서의 실제 렌더링(헤딩 스타일, 표 음영, 이미지 배치)은 육안 확인이 필요합니다 — hwpx_validation.md §3 절차 그대로 이 파일에 적용하면 됩니다. 스크립트는 pip install python-hwpx pillow 후 바로 실행 가능하고, 표 행 추가나 이미지 교체 등 원하는 변형을 말씀해주시면 조정해드릴게요.Disaster plan templateHWPX Make templatePY Ph photo 01이미지 · PNG Ph map 01이미지 · PNG 빈문서 hwpx에서 시작해도 될까?빈 문서 시작의 장단점을 비교하고 스타일 기반 접근법을 제시했습니다빈 문서 시작의 장단점을 비교하고 스타일 기반 접근법을 제시했습니다가능합니다. 사실 이미 절반은 구현되어 있어요 — builder.py의 시나리오 C(신규 문서 생성)가 정확히 그 경로입니다. 다만 "빈 문서 시작"은 편집 문제가 아니라 생성 문제로 성격이 바뀌기 때문에, 세 가지를 짚고 가야 합니다.
+1. 이 시스템의 최대 강점이 무효화됩니다. HWPX↔HTML 왕복 구조의 핵심 가치는 "원본 서식 보존"인데, 빈 문서엔 보존할 서식이 없죠. 표 구조·번호 체계·스타일을 전부 LLM+빌더가 만들어야 하고, 품질 상한이 python-hwpx의 생성 능력으로 정해집니다. 어제 검증했듯 구조적으로는 멀쩡한 문서가 나오지만, 한컴 기본 스타일 수준이라 공문서 외형 품질(함초롬바탕, 조직 표준 서식, 개요 번호 모양)은 템플릿 기반 대비 떨어집니다.
+2. 그래서 권장하는 건 "완전 빈 문서"가 아니라 "스타일 시드 문서"입니다. 내용은 비어 있지만 header.xml에 회사 표준 charPr/paraPr/borderFill(제목·본문·표머리 스타일, 폰트, 표 테두리)이 정의된 hwpx를 하나 만들어 베이스로 쓰는 방식이에요. 한컴에서 표준 스타일만 잡은 문서를 저장하면 됩니다. 이러면 빈 문서 시작의 유연함 + 템플릿의 서식 품질을 동시에 얻고, "기존 표 복제" 전략도 시드 안에 숨김 표 하나 넣어두면 그대로 작동합니다.
+3. 생성 단계도 IR 원칙을 유지하세요. LLM에게 hwpx나 HTML을 직접 만들게 하지 말고, 지난번 표 정규화와 같은 논리로 문서 스펙 IR을 뱉게 하는 겁니다 — 이미 build_hwpx(spec)이 받는 {title, paragraphs, tables} 형식이 그 IR이에요. 여기에 headings, numbered_list, image_slot 정도만 확장하면, guided_json 스키마로 강제 가능한 생성 계약이 완성됩니다. 흐름은: 빈(시드) 문서 → LLM이 spec JSON 생성 → build_hwpx → 이후는 기존 편집 파이프라인이 그대로 인계.
+부가 이점 하나: python-hwpx로 생성한 문서는 어제 확인했듯 빈 셀에도 hp:t가 있어서, 빈 셀 편집 제약이 처음부터 없습니다. 정리하면 — 빈 문서 시작 OK, 단 시드 문서 + spec IR 생성 방식으로. 시나리오 C를 "문단 나열 생성"에서 "구조화 문서 생성"으로 격상시키는 확장이라 기존 설계와도 충돌이 없습니다.시드 문서 샘플 하나만들어줘시드 문서 구조를 설계하고 스타일 샘플을 구성했습니다시드 문서 구조를 설계하고 스타일 샘플을 구성했습니다시드 문서를 만들어 M1 파이프라인 검증까지 마쳤습니다. 생성 스크립트도 함께 드립니다.
+구조 — 내용 없는 문서가 아니라 "스타일 운반체 + 복제 소스"로 설계했습니다. 모든 시드 요소에 [[SEED:이름]] 마커를 달아 파이프라인이 기계적으로 찾을 수 있게 했고요:
+§A 스타일 카탈로그 (문단 4개 — header.xml에 정의를 실어 나름)
+
+[[SEED:title]] — 22pt 굵게, 가운데 정렬
+[[SEED:h1]] / [[SEED:h2]] — 16pt/13pt 굵게 + 개요 번호 2단계 연결 (1. / 가. — hwpx numbering 정의로, 새 헤딩 문단이 이 paraPr을 참조하면 번호가 자동 증가합니다)
+[[SEED:body]] — 11pt, 줄간격 160%, 양쪽 정렬
+
+§B 복제 소스
+
+[[SEED:table]] + 표준 표 2×3 (헤더 행 D9E2F3 음영 borderFill, 본문 빈 행 — hp:t 포함이라 즉시 편집 가능)
+[[SEED:image_slot]] + placeholder 이미지 (BinData 임베드, 교체·복제용)
+
+검증 결과: validate_hwpx OK, 노드 15개 파싱, 시드 마커 6개 전부 조회됨, HTML 변환 data-id 15개 일치. 그리고 핵심 —마커→스타일 참조 매핑이 실측으로 확인됐습니다: title→charPr 7, h1→8, h2→9, body→6. 생성 파이프라인은 이렇게 동작하면 됩니다:
+
+시드를 복사해 새 문서 시작
+마커 노드에서 charPrIDRef/paraPrIDRef를 읽음 (parse_section으로 마커 텍스트 검색 → t_elems의 부모 run 속성)
+LLM의 spec IR({headings, paragraphs, tables, image_slots})을 그 참조로 문단/표/이미지 생성 — 표·이미지는 §B 요소를 deepcopy 후 내용 교체
+완성 후 마커 요소 제거 (마커가 노드라서 기존 편집 체계로 빈 텍스트 교체하거나 parent_map으로 삭제)
+
+스타일 커스터마이징은 make_seed.py의 char_pr() 호출부에서 크기·굵기를 바꾸면 되고, 폰트 지정(함초롬바탕 등)이나 회사 표준 여백까지 넣으려면 확장 가능합니다. 다만 가장 실용적인 대안도 말씀드리면 — 이 스크립트 산출물 대신, 한컴오피스에서 회사 표준 스타일로 같은 구조(마커 문단 6개 + 표 + 그림)를 직접 만들어 저장한 hwpx를 시드로 써도 파이프라인은 동일하게 작동합니다. 마커 규약만 지키면 시드의 출처는 무관하니, 서식 품질이 중요해지는 시점엔 그쪽이 정답이에요. 한컴 육안 확인(개요 번호 증가, 표 음영)은 이 파일로 한번 해보시길 권합니다.Seed baseHWPX Make seedPY 이렇게하면 llm이 표 내용을 행과 열로 10:10 으로 응답해도 표를 제대로 한글로 출력할수있어?표 확장 방식과 한글 렌더링 가능성을 검토했습니다표 확장 방식과 한글 렌더링 가능성을 검토했습니다핵심을 짚으셨어요. 시드 표를 그대로 deepcopy하는 방식만으로는 안 됩니다 — 시드 표는 2×3이니 10×10을 만들려면 행·열 복제 + cellAddr 재번호 + 열폭 재계산이 필요하죠. 하지만 생성 파이프라인에서는 그 일을 python-hwpx가 대신해줍니다. 시드에서 가져올 건 격자가 아니라 스타일 참조뿐이에요. 실제로 되는지 바로 검증해보겠습니다.페이지 레이아웃 문제로 인한 표 너비 초과 검토 중페이지 레이아웃 문제로 인한 표 너비 초과 검토 중됩니다 — 방금 실측으로 확인했어요. LLM이 10×10 cells 배열을 응답했다고 가정하고, 시드 문서를 열어 add_table(10, 10)으로 생성한 결과:
+
+validate_hwpx OK
+parse_section으로 셀 100개 전부 파싱, 행/열 주소(cellAddr) 정확 (0,0)~(9,9)
+헤더 행 음영(시드와 동일 borderFill 재사용) 적용
+HTML 변환 data-id 116개 일치
+
+즉 격자 크기는 자유입니다. cellAddr 재번호·rowCnt/colCnt·열폭 분배를 python-hwpx가 전부 계산해주기 때문에, 시드에서 가져오는 건 음영·글자 스타일 참조 id뿐이고 표의 차원은 LLM 응답(IR의 cells 2차원 배열)이 그대로 결정합니다. 어떤 크기가 와도 코드는 같은 두 줄이에요 — add_table(len(cells), max열수) + 셀 루프.
+다만 실측에서 실무 주의점 하나가 드러났습니다: 기본 생성 시 셀폭이 25mm로 잡혀서 10열이면 표 전체가 250mm — A4 본문폭(여백 제외 약 150~160mm)을 넘칩니다. 한컴에서 열면 표가 페이지를 삐져나가거나 잘려 보일 수 있어요. 대응은 두 겹으로:
+
+생성 시 폭 명시 — add_table(rows, cols, width=본문폭_hwpunit)으로 총폭을 고정하면 열폭이 균등 분배됩니다. 10열이면 열당 약 15mm라 좁긴 하지만 페이지 안에는 들어갑니다.
+IR 검증에서 열 수 상한 — 지난번 jsonschema 검증 층에 maxItems(예: 열 8~10개)를 걸고, 초과 시 LLM에 "열이 너무 많으니 표를 분할하거나 행/열을 전치하라"고 재요청하는 규칙을 넣는 게 문서 품질상 더 근본적인 해법입니다. 공문서에서 10열 표는 대개 설계가 잘못된 표라서요.
+
+첨부한 seed_10x10.hwpx를 한컴에서 열어보시면 폭 넘침이 실제로 어떻게 보이는지 확인할 수 있습니다 — 이게 IR 상한값을 정하는 근거 자료가 될 거예요. 병합(cellSpan)이 필요한 표는 별개 주제인데, IR에 merges를 받기 시작하면 복잡도가 크게 뛰니 1차에서는 "병합 없는 정격자만" 계약으로 못 박는 걸 권합니다.Seed 10x10HWPX 현재만들어진 프로그램에서는 uni가 왜 응답을 반 페이지도 못할까토큰 제한과 프롬프트 설계가 응답 길이를 제약했다고 진단했다토큰 제한과 프롬프트 설계가 응답 길이를 제약했다고 진단했다코드를 근거로 보면 원인이 한 가지가 아니라 네 겹으로 겹쳐 있습니다. 유력한 순서대로:
+1. max_tokens를 안 보내고 있습니다 (가장 유력). _chat_body가 보내는 필드는 query/model_key/history/stream/top_k/thinking뿐이에요. 생성 길이 파라미터가 없으니 UNI RAG 서버(vLLM)의 기본 max_tokens 상한이 그대로 적용되는데, 서버 설정에 따라 512~1024 토큰이 흔합니다. 한국어는 토큰 효율이 낮아서 1024토큰이면 딱 반 페이지 남짓이에요. 증상이 "항상 비슷한 길이에서 끊김"이라면 이게 범인이고, JSON 응답이 중간에 잘려 복구 파서가 자주 도는 것도 같은 원인의 부수 증상일 겁니다.
+2. 프롬프트가 짧게 쓰라고 가르치고 있습니다. EDIT_JSON_EXAMPLE의 reply 예시가 문자 그대로 *"사용자에게 보여줄 한 줄 답변"*이고, "다른 설명 없이 JSON만 출력하라"가 반복됩니다. LLM은 예시 길이를 강하게 모방하므로 new_text까지 덩달아 짧아집니다. 채움 프롬프트에 분량 지시가 없으면 placeholder 하나당 한두 구절만 넣고 끝내는 게 자연스러운 결과예요.
+3. qwen3-coder-next는 장문 작성 모델이 아닙니다. 코드 특화 모델이라 간결·구조화 출력에 최적화돼 있어요. JSON 준수율이 좋았던 이유이기도 하지만, 계획서 서술문을 풍성하게 쓰는 데는 불리합니다. 게다가 thinking: False라 장문 구성 능력이 더 눌립니다.
+4. RAG 파이프라인이 컨텍스트를 잠식합니다. 스키마 실측에서 확인하셨듯 서버가 무조건 top_k=5 검색을 수행해 청크를 프롬프트에 끼워 넣습니다. 서버 측 총 토큰 예산이 고정이라면 검색 청크가 생성 여유분을 깎아먹고, 서버 내부 프롬프트가 "근거 기반 간결 답변"류 지시를 갖고 있을 가능성도 큽니다.
+대응 순서 제안:
+
+즉시 실험: chat()의 opts 병합 구조를 이용해 max_tokens: 4096(또는 서버가 받는 이름 — max_new_tokens일 수도)을 바디에 실어 같은 질의를 비교하세요. probe_uni_rag.py에 한 줄 추가로 A/B 확인이 됩니다. 서버가 필드를 무시하면 관리자에게 기본값 확인 + passthrough 요청 — 지난번 guided_json 협의에 이 항목을 묶으면 한 번에 끝납니다.
+프롬프트 수정: fill 프롬프트에 명시적 분량 지시("각 placeholder의 new_text는 공문서 문체로 3~5문장, 표 셀은 1~2문장") + 예시의 new_text를 실제 길이 수준으로 교체.
+모델 분리: 의도 분류·편집(JSON 정확성 중요)은 coder 유지, fill(장문 작성)은 일반 qwen3 계열 model_key로 나눠 쓰는 것도 검토 — model_key가 요청별 파라미터라 코드 변경이 거의 없습니다.
+
+1번부터 확인해보시길 — 서버 기본값이 원인이면 파라미터 하나로 즉시 해결되는 문제입니다.

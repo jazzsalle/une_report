@@ -1,53 +1,64 @@
 # PROGRESS
 
 ## Last updated
-2026-07-11
+2026-07-13
 
 ## Current goal
 LLM 대화 기반으로 hwpx 문서를 생성·편집하고 결과물(hwpx·docx)을 즉시 출력하는 독립형 도구 개발.
 (설계 원본: `개발 배경 및 목적.txt`, Phase 정의: `CLAUDE.md`, 합격 기준: `evaluation_criteria.md`)
+Phase 1~7은 이전 세션에서 완료(커밋 이력 참조). 현재는 **개선 브랜치 작업 중**.
 
-## Done this session
-- Phase 1~3 완료 (커밋 2b84163, 8a9a714). 상세는 git log 참조.
-- **Phase 4 완료 — evaluator PASS** (hwpx 코어 M1, `app/core/hwpx/`):
-  - `package.py`: extract/repack(엔트리 순서·압축방식·mimetype STORED 보존, 서명 skip) + `validate_hwpx`(zip·mimetype·header/section/content.hpf 존재·XML 파스 검사)
-  - `parser.py`: `parse_section` — 문단·표셀 TextNode 파싱, 중첩 표는 내부 셀만, 순번 규칙 docstring 명기
-  - `html.py`: `hwpx_to_html` — self-contained HTML 문자열 반환, `.page` 분할, charPr/paraPr/borderFill→CSS, 표 병합, BinData base64 인라인. **data-id는 parse_section 노드를 소비해 매핑(불변식: data-id 집합 == 전역 id 집합, 어긋나면 RuntimeError)**
-  - `edits.py`: `apply_edits(hwpx, edits[{id,new_text}], out)` — 전역 id=섹션 로컬+offset, 첫 hp:t 교체·나머지 비움(서식 보존), 동일 텍스트/미존재 id는 skip, 섹션 XML 스냅샷 반환. `normalize_edit_id`는 12/"12"/"p-0012" 허용
-  - `placeholder.py`(4유형 탐지·verify_output), `chunker.py`(표 셀 불분할 청크), `builder.py`(python-hwpx로 새 hwpx 생성, placeholders_demo 지원)
-  - `tests/` 4개 파일 **53 passed** (`.venv/Scripts/python -m pytest`), `docs/hwpx_validation.md`(자동 검증 항목 + 한컴 육안 확인 절차 + 실양식 실측 절차)
-  - 참조 구현(office-mcp)은 LICENSE 미확인이라 코드 미복사, 구조만 응용해 자체 작성
-  - ⚠ 실양식(재난 계획서 hwpx) 미확보 — python-hwpx 동봉 템플릿으로 대체 실측, 입수 시 재실측 체크리스트가 hwpx_validation.md 4장에 있음. 한컴오피스 육안 확인은 Phase 7로 이월
-- **Phase 5 완료 — evaluator PASS** (LLM 연동 M3, `app/llm/`):
-  - `/chat/` 응답 스키마 실측 완료(`docs/uni_rag_chat_schema.md`, `scripts/probe_uni_rag.py`): stream=false는 `{answer, sources[]}`, SSE는 `data: "델타"`(JSON 문자열)·`{"__sources__":...}`·`[DONE]` 종료
-  - `base.py`: `LLMBackend` ABC + 예외 계층(LlmError/LlmAuthError/LlmUnavailableError/LlmTimeoutError/LlmJsonParseError) — OpenAI 호환 교체 대비
-  - `json_parser.py`: `parse_llm_json` 4단계 복구(원문→펜스/<think> 제거→괄호 균형 추출→따옴표·트레일링 콤마 보정)
-  - `uni_rag_client.py`: `chat()`(stream=false, answer 추출)·`chat_stream()`(SSE) + 장애 매핑(401/403→Auth, 5xx·연결불가→Unavailable, 타임아웃→Timeout) + MockTransport 주입 지점
-  - `pytest.ini`(integration 마커 기본 제외). 기본 pytest **95 passed**, `-m integration` 실서버 **2 passed**(실로그인+chat+JSON 지시 준수 확인)
-  - 품질 1차 실측: qwen3-coder-next가 공문서 어투 교정·순수 JSON 응답 모두 양호
-  - `.env` 생성(테스트 계정 기입, gitignore 등재 확인 — 커밋 금지 대상)
-- **Phase 6 완료 — evaluator PASS** (오케스트레이션 M4 + API M5 + UI M6):
-  - `app/services/orchestrator.py`+`prompts.py`: 의도 분류(edit/fill/query, LLM 분류+휴리스틱 폴백), edit 파이프라인(JSON 재요청 1회·무효 id 필터), fill 파이프라인(placeholder 청크 분할·병합), `TurnResult` 계약
-  - `app/services/document_store.py`: 업로드→v0, 버전 관리(v{N}.hwpx+HTML 캐시), get_nodes/get_placeholders(전역 id), apply_document_edits, export(hwpx+**docx**=M2-1 구현됨, `app/core/docx/exporter.py`)
-  - `app/api/`: routes_documents(업로드/preview/export/versions), routes_chat(**SSE**: status→token→document_updated→done, error 매핑), routes_sessions(메시지 이력)
-  - `web/src/`: LoginForm·ChatPanel·PreviewPanel + api.js(fetch 기반 POST SSE 파서), DOMPurify 렌더, data-id 하이라이트·클릭 선택(selection), hwpx 다운로드. `npm run build` 성공(web/dist)
-  - 테스트: **143 passed, 2 deselected** — e2e 시나리오 A(양식 채움 fill→edit→export→placeholder 전원 해소)·B(문단 수정·원문 보존) FakeBackend로 전 구간 검증
-  - `docs/demo_scenarios.md`: 시나리오 A·B 재현 절차(명령어 수준)·한컴 육안 확인 항목·실 LLM 주의사항
-- **Phase 7 완료 — evaluator PASS** (통합 테스트·문서화): 시나리오 C(선택 편집)·D(질의 후 문서 반영) e2e 테스트 추가 → 전체 **146 passed, 2 deselected**. `README.md`(설치·실행·사용법·문서 링크·보안 주의), `docs/limitations.md`(제약 7항목·향후 과제 7건), `docs/demo_scenarios.md`를 시나리오 A~D 전체 가이드로 확장(한컴오피스/Word 육안 확인 절차 포함)
-- **전 Phase(1~7) 완료** — 프로젝트 목표 달성 (독립형 hwpx 대화 편집 도구 PoC)
-- UNE 테스트 계정은 `개발 배경 및 목적.txt`에 기재됨 (⚠ 원격 push 전 제거 권장)
+## 현재 브랜치
+`feature/core-improvements` — origin에 푸시됨 (main 미병합).
+설계 기록: `docs/core_improvements_design.md` (A·B·C 전체), 개선 출처:
+루트 `개선 검토 사항.txt`(A안)·`ouputs/hwpx_양식인지실패_원인분석_개선안.md`(B안).
+
+## Done this session (2026-07-12~13)
+- **A안 — 코어 개선 5건** (커밋 4ab08e0):
+  - A1 빈 셀 편집: `TextNode.elem` 앵커 + `apply_edits`가 hp:t 없는 노드에 hp:run/hp:t 생성 삽입.
+    실측 근거: 실양식.hwpx 194노드 중 108개(56%)가 hp:t 없음, 빈 셀은 `run(charPrIDRef)`만 있고 t 없음이 지배적
+  - A2 버전 핀: `ChatRequest.base_version` → 불일치 시 LLM 호출 전 `version_conflict` SSE 오류,
+    `apply_document_edits(expected_version)` 재검사, App.vue 자동 미리보기 복구
+  - A3 placeholder 오탐 제외: `[그림 N]`·`[표 N]` 캡션, `[ ]`·`[√]` 체크박스 (실양식 11건 전원 체크박스 오탐이었음)
+  - A4 LLM 호출 병합: `build_turn_prompt`로 분류+응답 1회 수신({intent,reply,edits,notes}),
+    JSON 실패·무효 intent 시 기존 분리 경로(분류→작업) 폴백. edit·query 턴 2회→1회
+  - A5 fill 분량 지시(문단 3~5문장·셀 1~2문장) + 예시 실물 분량화 + `LLM_MAX_TOKENS`(기본 4096) 동봉
+- **B안 — 실양식 인지 실패 대응** (커밋 97dba7b, 출처: ouputs 분석 문서. UNI 서버 협의 불가 전제):
+  - B1 가이드 감지: `app/core/hwpx/styles.py` 신설 — header.xml charPr "기울임+파랑(B≥128, B>R+40, B>G+40)" 판정.
+    서식1 61종 적중·타 문서 4종 오탐 0 실측. `TextNode.guide_text`, `get_placeholders`에 kind=guide(작성 지시문)
+  - B2 표 구조 노출: `get_nodes`에 table_idx/row/col/span, 프롬프트를 표 그리드("(행,열) id: 텍스트", 빈 칸 표기)로 직렬화
+  - B3 규모 제어: edit·query 프롬프트에서 빈 노드 제외(selection 있으면 전부 유지), 표 불분할 greedy 청킹
+  - B4 회귀 게이트: `tests/test_real_form_regression.py` — 서식1 고정치(노드 5,386·빈 3,687·가이드 charPr 61) 하드 게이트
+- **UNI RAG 500 원인 실측·대응** (커밋 15c52a6):
+  - 실측: /chat/ 쿼리 **48k자 OK / 54k자부터 HTTP 500** (max_tokens 필드는 무관 — A/B로 배제)
+  - `PROMPT_CHAR_BUDGET`(기본 30k)로 노드 목록 예산 집행, 초과분 생략 + notes 안내("미리보기에서 선택 후 요청")
+  - 서식1 실서버 e2e 통과 확인 (914노드 생략 안내와 함께 정상 응답)
+- **C안 — fill을 구조 인식 전량 재작성으로 재설계** (커밋 ff04fd4, 오류 캡처 `ouputs/오류사항 화면캡쳐.png` 대응):
+  - 배경: 스텁 단어 템플릿(title·표제목·표내용)은 표식이 없어 종전 fill이 1개 노드만 채움
+  - fill 대상 = 문서 전체 노드(빈 셀 포함). 기존 텍스트는 구조 힌트(제목 자리·헤딩 기호·표 머리글·라벨)로 쓰고
+    새 내용을 배치, 무관한 옛 본문은 `new_text:""`로 삭제. 라벨 유지/대체는 LLM 판단(사용자 결정)
+  - `FILL_NODE_LIMIT`(기본 300) 안전판: 초과 시 표식·가이드 중심 축소(+notes), 표식 없으면 앞쪽 상한만
+  - 실서버 재현 검증: 같은 템플릿+호우 매뉴얼 내용 → 종전 1개 → **31개 생성·25개 적용**, 스텁 전부 소거
+- 테스트: 146 → **194 passed** (pytest, integration 2 deselected)
+- 실측 프로브 이력: scratchpad에서 수행(저장소 외). UNI RAG passthrough — max_tokens/max_new_tokens 모두 200 수용(효과는 미검증)
 
 ## In progress
-- 없음 — Phase 4~7 산출물 Phase별 4개 커밋으로 커밋 완료 (사용자 승인, scripts/probe_output.txt 포함)
+- 없음 (모든 변경 커밋·푸시 완료)
 
 ## Next steps
-1. (선택) 실양식 재난 계획서 hwpx 입수 시 `docs/hwpx_validation.md` §4.3 재실측 체크리스트 수행
-2. (선택) 한컴오피스에서 데모 산출물 육안 확인 (`docs/demo_scenarios.md` §6)
-3. (선택) `개발 배경 및 목적.txt`의 실계정 제거 후 원격 push
+1. (권장) `feature/core-improvements` → main PR 생성·병합 (https://github.com/jazzsalle/une_report/pull/new/feature/core-improvements)
+2. 분석 문서의 중기 과제: 2단계 필드맵 파이프라인(§3-5), create 의도 배선(§3-6, `build_hwpx` 연결), 줄 단위 프로토콜·검증 루프(§4.2)
+3. B안 잔여(사용자 미선택分): 보안·위생 — app_tokens TTL·로그아웃, rag_jwt 평문 limitations 명시, web/dist gitignore
+4. max_tokens 실효성 검증: 서버가 필드를 수용은 하나 생성 길이에 실제 반영되는지 장문 질의로 A/B
+5. 한컴오피스 육안 확인: 재작성 fill 산출물(빈 셀 삽입 포함) 렌더링 점검 (`docs/hwpx_validation.md` §3)
 
 ## Blockers
-- 없음
+- 없음. (UNI 담당자 협의 불가 상태 — guided_json 등 서버 측 개선은 보류, 전부 클라이언트 측으로 우회 중)
+
+## 로컬 전용 파일 (커밋 안 됨 — 회사 PC에는 없음)
+- `개발 배경 및 목적.txt`(실계정 포함, gitignore), `.env`(테스트 계정), `seed_base.hwpx`, `실양식2.hwpx`(루트), `ouputs/실양식*.hwpx`(루트 사본)
+- 커밋된 실측 픽스처: `ouputs/[서식1] 사업계획서(신청용).hwpx`(회귀 테스트가 사용, 없으면 skip), `ouputs/오류사항 화면캡쳐.png`, `개선 검토 사항.txt`
 
 ## How to run
-- 백엔드: `.venv/Scripts/python -m uvicorn app.main:app --port 8080` / 테스트: `.venv/Scripts/python -m pytest` (상세는 CLAUDE.md)
-- Phase 실행: `/phase-run N`
+- 백엔드: `.venv/Scripts/python -m uvicorn app.main:app --port 8080` / 테스트: `.venv/Scripts/python -m pytest`
+- 회사 PC 최초 셋업: clone → `git checkout feature/core-improvements` → venv 생성·`pip install -r requirements.txt` → `.env.example`을 `.env`로 복사해 테스트 계정 기입 → (UI 수정 시) `cd web && npm install && npm run build`
