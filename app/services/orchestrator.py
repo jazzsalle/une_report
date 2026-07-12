@@ -15,9 +15,11 @@ DB·파일·FastAPI를 만지지 않는 순수 서비스 계층으로, `LLMBacke
   `{"reply","edits","notes"}` JSON 수신 → normalize_edit_id 정수화 →
   문서에 없는 id 제거(notes 기록). 파싱 실패 시 1회 재요청, 재실패면
   LlmJsonParseError 전파.
-- M4-3 채움: 대상 = placeholder/가이드 노드 + 그 노드가 속한 표의 빈 셀
-  (B3). 표 경계를 우선하는 청크로 나눠 청크별 호출 → edits 병합
-  (중복 id는 마지막 승리).
+- M4-3 채움 (C — 구조 인식 전량 재작성): 기본 대상 = 문서의 모든 노드
+  (기존 텍스트는 구조 힌트로 쓰고 사용자 내용으로 전량 재배치, 무관한
+  본문은 빈 문자열로 삭제). FILL_NODE_LIMIT 초과 대형 문서는 표식·가이드
+  중심(B3)으로 축소. 표 경계를 우선하는 청크로 나눠 청크별 호출 →
+  edits 병합 (중복 id는 마지막 승리).
 - 프롬프트 규모 제어 (B3): edit·query 프롬프트는 selection이 없으면
   텍스트 없는 노드를 제외한 축소 목록을 쓴다.
 - query: backend.chat 응답을 그대로 reply로.
@@ -40,7 +42,7 @@ INTENTS = ("edit", "fill", "query")
 FILL_CHUNK_SIZE = 30
 
 # 의도 분류 휴리스틱 폴백 키워드 (fill을 edit보다 먼저 검사)
-_FILL_KEYWORDS = ("작성", "채워", "초안")
+_FILL_KEYWORDS = ("작성", "채워", "초안", "다시 작성", "재작성")
 _EDIT_KEYWORDS = ("수정", "바꿔", "변경", "고쳐")
 
 
@@ -266,17 +268,20 @@ class Orchestrator:
         nodes: list[dict],
         placeholders: list[dict],
     ) -> TurnResult:
-        # 대상 선정 (B3): placeholder/가이드 노드 + 그 노드가 속한 표의 빈 셀.
-        # (실양식은 라벨 옆 빈 셀이 채움 대상인데 표식이 없어 안 잡히므로,
-        #  표식이 있는 표의 빈 셀까지 대상으로 넓힌다. 표식이 하나도 없으면
-        #  종전대로 전체 노드.)
+        # 대상 선정 (C — 구조 인식 전량 재작성): 어떤 템플릿이든(스텁 단어,
+        # 이미 채워진 과거 문서 포함) 문서 전체를 대상으로 삼아 구조만 남기고
+        # 사용자 내용으로 다시 채운다. 단 FILL_NODE_LIMIT을 넘는 대형 문서는
+        # 호출 폭주를 막기 위해 표식·가이드 중심(B3 방식)으로 축소한다.
+        notes_all: list[str] = []
         ph_ids: set[int] = set()
         for p in placeholders:
             try:
                 ph_ids.add(normalize_edit_id(p["id"]))
             except (ValueError, KeyError):
                 continue
-        if ph_ids:
+        if len(nodes) <= config.FILL_NODE_LIMIT:
+            targets = list(nodes)  # 전량 재작성 (빈 셀 포함)
+        elif ph_ids:
             ph_tables = {
                 n["table_idx"] for n in nodes
                 if n.get("table_idx") is not None and int(n["id"]) in ph_ids
@@ -289,11 +294,19 @@ class Orchestrator:
                     and not (n.get("text") or "").strip()
                 )
             ]
+            notes_all.append(
+                f"문서가 커서(노드 {len(nodes)}개) 표식·가이드 중심으로 채웠습니다. "
+                "다른 부분의 전면 재작성이 필요하면 미리보기에서 선택 후 요청하세요."
+            )
         else:
-            targets = list(nodes)
+            # 표식조차 없는 대형 문서: 앞에서부터 상한까지만 (호출 폭주 방지)
+            targets = nodes[:config.FILL_NODE_LIMIT]
+            notes_all.append(
+                f"문서가 커서(노드 {len(nodes)}개) 앞쪽 {len(targets)}개 노드만 "
+                "채웠습니다. 나머지는 미리보기에서 선택 후 요청하세요."
+            )
 
         merged: dict[int, str] = {}
-        notes_all: list[str] = []
         for chunk in self._fill_chunks(targets, FILL_CHUNK_SIZE):
             chunk_ids = {int(n["id"]) for n in chunk}
             chunk_ph = [

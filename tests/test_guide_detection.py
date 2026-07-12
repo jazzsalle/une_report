@@ -269,33 +269,77 @@ class TestPromptNodesAndFillTargets:
         assert [n["id"] for n in chunks[0]] == [0, 1, 2]  # 행 순서 유지
 
 
-class TestFillTargetExpansion:
-    """B3 — fill 대상: 표식/가이드 노드 + 같은 표의 빈 셀 (다른 표·본문 제외)."""
+class TestFillTargets:
+    """C — fill 대상: 기본은 전량 재작성, FILL_NODE_LIMIT 초과 시 표식 중심 축소."""
 
-    def test_empty_cells_of_placeholder_table_join_targets(self):
-        import asyncio
-        from tests.test_orchestrator import FakeBackend
+    _NODES = None
 
-        nodes = [
+    @staticmethod
+    def _sample_nodes():
+        return [
             _cell(0, 0, 0, 0, "[기관명]"),   # 표식 노드
-            _cell(1, 0, 0, 1),               # 같은 표 빈 셀 → 대상 포함
-            _cell(2, 1, 0, 0),               # 표식 없는 표의 빈 셀 → 제외
-            _para(3, "일반 본문"),            # 표식 없음 → 제외
+            _cell(1, 0, 0, 1),               # 같은 표 빈 셀
+            _cell(2, 1, 0, 0),               # 표식 없는 표의 빈 셀
+            _para(3, "일반 본문"),            # 표식 없는 본문
         ]
+
+    def _run_fill_turn(self, backend):
+        import asyncio
+        orch = Orchestrator(backend)
+        return asyncio.run(orch.run_turn(
+            token="t", message="양식 채워줘", history=[],
+            doc_nodes=self._sample_nodes(),
+            placeholders=[{"id": 0, "token": "[기관명]", "kind": "pattern"}],
+        ))
+
+    def test_small_document_targets_all_nodes(self):
+        """상한 이하 문서는 표식 유무와 무관하게 전 노드가 재작성 대상."""
+        from tests.test_orchestrator import FakeBackend
+        backend = FakeBackend([
+            '{"intent": "fill"}',
+            '{"reply": "채움", "edits": [{"id": 0, "new_text": "기관: 서울시"},'
+            ' {"id": 1, "new_text": "값"}, {"id": 3, "new_text": ""}]}',
+        ])
+        result = self._run_fill_turn(backend)
+        assert result.intent == "fill"
+        fill_prompt = backend.calls[1][0]
+        assert "(0,1) 1: (빈 칸)" in fill_prompt
+        assert "[표 1]" in fill_prompt         # 표식 없는 표도 포함 (전량)
+        assert "일반 본문" in fill_prompt      # 표식 없는 본문도 포함
+        assert {e["id"] for e in result.edits} == {0, 1, 3}
+
+    def test_large_document_falls_back_to_placeholder_tables(self, monkeypatch):
+        """상한 초과 문서는 표식 노드 + 같은 표 빈 셀로 축소하고 notes 안내."""
+        from tests.test_orchestrator import FakeBackend
+        from app import config
+        monkeypatch.setattr(config, "FILL_NODE_LIMIT", 3)  # 노드 4개 > 상한 3
         backend = FakeBackend([
             '{"intent": "fill"}',
             '{"reply": "채움", "edits": [{"id": 0, "new_text": "기관: 서울시"},'
             ' {"id": 1, "new_text": "값"}]}',
         ])
+        result = self._run_fill_turn(backend)
+        fill_prompt = backend.calls[1][0]
+        assert "(0,1) 1: (빈 칸)" in fill_prompt   # 같은 표 빈 셀 유지
+        assert "[표 1]" not in fill_prompt          # 표식 없는 표 제외
+        assert "일반 본문" not in fill_prompt
+        assert result.notes and "문서가 커서" in result.notes
+
+    def test_large_document_without_placeholders_truncates(self, monkeypatch):
+        """상한 초과 + 표식 없음 → 앞쪽 상한 개수만 대상 + notes 안내."""
+        import asyncio
+        from tests.test_orchestrator import FakeBackend
+        from app import config
+        monkeypatch.setattr(config, "FILL_NODE_LIMIT", 2)
+        nodes = [_para(i, f"문단 {i}") for i in range(5)]
+        backend = FakeBackend([
+            '{"intent": "fill"}',
+            '{"reply": "채움", "edits": [{"id": 0, "new_text": "새 문단"}]}',
+        ])
         orch = Orchestrator(backend)
         result = asyncio.run(orch.run_turn(
-            token="t", message="양식 채워줘", history=[],
-            doc_nodes=nodes,
-            placeholders=[{"id": 0, "token": "[기관명]", "kind": "pattern"}],
+            token="t", message="채워줘", history=[], doc_nodes=nodes,
         ))
-        assert result.intent == "fill"
         fill_prompt = backend.calls[1][0]
-        assert "(0,1) 1: (빈 칸)" in fill_prompt   # 같은 표 빈 셀이 대상
-        assert "[표 1]" not in fill_prompt          # 표식 없는 표는 제외
-        assert "일반 본문" not in fill_prompt       # 표식 없는 본문 제외
-        assert {e["id"] for e in result.edits} == {0, 1}
+        assert "문단 1" in fill_prompt and "문단 2" not in fill_prompt
+        assert result.notes and "앞쪽" in result.notes

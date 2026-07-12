@@ -19,6 +19,10 @@ LLM_MAX_TOKENS = int(os.getenv("LLM_MAX_TOKENS", "4096"))
 # 약 48k자를 넘으면 HTTP 500을 반환한다(2026-07-13 실측: 48k OK / 54k 500).
 # RAG 청크·서버 프롬프트·대화 이력 여유분을 감안해 30k로 잡는다.
 PROMPT_CHAR_BUDGET = int(os.getenv("PROMPT_CHAR_BUDGET", "30000"))
+# fill(구조 인식 재작성)의 전량 대상 상한 노드 수. 이하면 문서 전체를
+# 재작성 대상으로 삼고, 초과하면 표식·가이드 중심으로 축소한다
+# (서식1급 5,386노드를 전량 순회하면 LLM 호출이 수백 회로 폭주).
+FILL_NODE_LIMIT = int(os.getenv("FILL_NODE_LIMIT", "300"))
 
 # 저장소
 DATA_DIR = Path(os.getenv("DATA_DIR", BASE_DIR / "data"))

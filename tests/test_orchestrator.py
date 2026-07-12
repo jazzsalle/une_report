@@ -250,19 +250,26 @@ def test_fill_duplicate_id_last_wins():
     assert result.edits == [{"id": 1, "new_text": "나중"}]
 
 
-def test_fill_targets_only_placeholder_nodes_in_prompt():
-    """fill 프롬프트에는 placeholder 포함 노드만 실린다."""
+def test_fill_rewrites_whole_document_including_plain_nodes():
+    """전량 재작성 (C): 표식 없는 일반 노드도 fill 프롬프트에 실리고,
+    빈 문자열 edits(기존 본문 삭제)도 그대로 적용된다."""
     texts = ["일반 문단 알파", "[기관명] 채움 대상", "일반 문단 베타"]
     backend = FakeBackend([
         '{"intent": "fill"}',
-        '{"reply": "채움", "edits": [{"id": 1, "new_text": "우리기관 채움 대상"}]}',
+        '{"reply": "채움", "edits": [{"id": 0, "new_text": "새 개요 문단"},'
+        ' {"id": 1, "new_text": "우리기관 채움 대상"},'
+        ' {"id": 2, "new_text": ""}]}',
     ])
-    result = _turn(backend, message="작성해줘", doc_nodes=_nodes(3, texts),
+    result = _turn(backend, message="이 내용으로 그대로 채워줘", doc_nodes=_nodes(3, texts),
                    placeholders=[{"id": 1, "token": "[기관명]"}])
     fill_prompt = backend.calls[1][0]
     assert "[기관명] 채움 대상" in fill_prompt
-    assert "일반 문단 알파" not in fill_prompt
-    assert result.edits == [{"id": 1, "new_text": "우리기관 채움 대상"}]
+    assert "일반 문단 알파" in fill_prompt   # 표식 없는 노드도 구조 힌트로 포함
+    assert result.edits == [
+        {"id": 0, "new_text": "새 개요 문단"},
+        {"id": 1, "new_text": "우리기관 채움 대상"},
+        {"id": 2, "new_text": ""},           # 무관한 기존 본문 삭제
+    ]
 
 
 # ── 4. selection 필터 ──────────────────────────────────────────
