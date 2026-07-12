@@ -15,6 +15,10 @@ UNI_RAG_TIMEOUT = float(os.getenv("UNI_RAG_TIMEOUT", "120"))
 # 응답이 잘리는 문제 대응. 0이면 필드를 보내지 않는다(서버 기본값 사용).
 # 서버가 필드를 무시할 수 있음 — passthrough 여부는 담당자 협의 대상.
 LLM_MAX_TOKENS = int(os.getenv("LLM_MAX_TOKENS", "4096"))
+# edit·query 프롬프트에 싣는 노드 목록의 문자 수 예산. UNI RAG는 쿼리가
+# 약 48k자를 넘으면 HTTP 500을 반환한다(2026-07-13 실측: 48k OK / 54k 500).
+# RAG 청크·서버 프롬프트·대화 이력 여유분을 감안해 30k로 잡는다.
+PROMPT_CHAR_BUDGET = int(os.getenv("PROMPT_CHAR_BUDGET", "30000"))
 
 # 저장소
 DATA_DIR = Path(os.getenv("DATA_DIR", BASE_DIR / "data"))

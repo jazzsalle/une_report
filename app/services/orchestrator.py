@@ -24,10 +24,14 @@ DB·파일·FastAPI를 만지지 않는 순수 서비스 계층으로, `LLMBacke
 """
 from dataclasses import dataclass
 
+from app import config
 from app.core.hwpx.edits import normalize_edit_id
 from app.llm.base import LLMBackend, LlmJsonParseError
 from app.llm.json_parser import parse_llm_json
 from app.services import prompts
+
+# 노드 한 줄 직렬화 시 텍스트 외 고정 오버헤드 추정치 (id·좌표·유형 표기)
+_NODE_LINE_OVERHEAD = 32
 
 # 의도 분류 결과로 허용되는 값
 INTENTS = ("edit", "fill", "query")
@@ -74,19 +78,20 @@ class Orchestrator:
             return await self._run_query(token, message, history)
 
         nodes = self._filter_selection(doc_nodes, selection)
-        # edit·query 프롬프트용 축소 목록 (B3 — 빈 노드 제외로 규모 제어)
-        prompt_nodes = self._prompt_nodes(nodes, placeholders or [], selection)
+        # edit·query 프롬프트용 축소 목록 (B3 — 빈 노드 제외 + 문자 예산)
+        prompt_nodes, omitted = self._prompt_nodes(nodes, placeholders or [], selection)
 
         # 병합 경로: 분류+응답을 1회 호출로 (실패 시 None → 분리 경로 폴백)
         combined = await self._try_combined_turn(
             token, message, history, nodes, prompt_nodes, placeholders or []
         )
         if combined is not None:
-            return combined
+            return self._note_omitted(combined, omitted)
 
         intent = await self._classify_intent(token, message, history, placeholders)
         if intent == "edit":
-            return await self._run_edit(token, message, history, prompt_nodes)
+            result = await self._run_edit(token, message, history, prompt_nodes)
+            return self._note_omitted(result, omitted)
         if intent == "fill":
             return await self._run_fill(token, message, history, nodes, placeholders or [])
         return await self._run_query(token, message, history)
@@ -94,25 +99,48 @@ class Orchestrator:
     @staticmethod
     def _prompt_nodes(
         nodes: list[dict], placeholders: list[dict], selection: list[int] | None
-    ) -> list[dict]:
+    ) -> tuple[list[dict], int]:
         """edit·query 프롬프트에 실을 노드 (B3 — 프롬프트 규모 제어).
 
-        selection이 있으면 사용자가 빈 셀을 직접 지목했을 수 있으므로 전부
-        유지한다. 없으면 텍스트 없는 노드를 제외하되, placeholder/가이드가
-        달린 노드는 남긴다 (실양식은 빈 셀이 68%라 전체 나열 시 프롬프트가
-        10만 자를 넘는다 — 채움은 _run_fill이 별도 대상 선정으로 처리).
+        반환: (노드 목록, 예산 초과로 생략된 노드 수).
+        - selection이 있으면 사용자가 빈 셀을 직접 지목했을 수 있으므로 전부
+          유지한다 (선택 범위는 작다는 전제).
+        - 없으면 텍스트 없는 노드를 제외하되 placeholder/가이드 노드는 남기고,
+          누적 직렬화 길이가 PROMPT_CHAR_BUDGET을 넘으면 이후 노드를 생략한다
+          (UNI RAG는 쿼리 약 48k자 초과 시 HTTP 500 — config 주석 실측 참조).
         """
         if selection:
-            return nodes
+            return nodes, 0
         keep_ids: set[int] = set()
         for p in placeholders:
             sid = Orchestrator._safe_id(p.get("id"))
             if sid is not None:
                 keep_ids.add(sid)
-        return [
+        candidates = [
             n for n in nodes
             if (n.get("text") or "").strip() or int(n["id"]) in keep_ids
         ]
+        budget = config.PROMPT_CHAR_BUDGET
+        used = 0
+        kept: list[dict] = []
+        for n in candidates:
+            used += len(n.get("text") or "") + _NODE_LINE_OVERHEAD
+            if used > budget and kept:
+                break
+            kept.append(n)
+        return kept, len(candidates) - len(kept)
+
+    @staticmethod
+    def _note_omitted(result: TurnResult, omitted: int) -> TurnResult:
+        """프롬프트 예산으로 생략된 노드가 있으면 notes에 안내를 덧붙인다."""
+        if omitted <= 0:
+            return result
+        note = (
+            f"문서가 길어 뒤쪽 노드 {omitted}개는 이번 요청에서 제외되었습니다. "
+            "해당 부분을 편집하려면 미리보기에서 그 부분을 선택한 뒤 다시 요청하세요."
+        )
+        result.notes = f"{result.notes}; {note}" if result.notes else note
+        return result
 
     # ── 분류+응답 병합 경로 (턴당 LLM 1회) ─────────────────────
 

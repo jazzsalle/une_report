@@ -195,19 +195,49 @@ class TestFormatNodesGrid:
 class TestPromptNodesAndFillTargets:
     def test_prompt_nodes_drops_empty_without_selection(self):
         nodes = [_para(0, "내용"), _cell(1, 0, 0, 0, ""), _cell(2, 0, 0, 1, "라벨")]
-        out = Orchestrator._prompt_nodes(nodes, [], selection=None)
+        out, omitted = Orchestrator._prompt_nodes(nodes, [], selection=None)
         assert [n["id"] for n in out] == [0, 2]
+        assert omitted == 0
 
     def test_prompt_nodes_keeps_placeholder_bearing_empty_node(self):
         nodes = [_para(0, "내용"), _cell(1, 0, 0, 0, "")]
-        out = Orchestrator._prompt_nodes(
+        out, omitted = Orchestrator._prompt_nodes(
             nodes, [{"id": 1, "token": "지시문", "kind": "guide"}], selection=None
         )
         assert [n["id"] for n in out] == [0, 1]
+        assert omitted == 0
 
     def test_prompt_nodes_keeps_all_with_selection(self):
         nodes = [_cell(1, 0, 0, 0, "")]
-        assert Orchestrator._prompt_nodes(nodes, [], selection=[1]) == nodes
+        assert Orchestrator._prompt_nodes(nodes, [], selection=[1]) == (nodes, 0)
+
+    def test_prompt_nodes_enforce_char_budget(self, monkeypatch):
+        """누적 길이가 예산을 넘으면 이후 노드를 생략하고 생략 수를 보고한다."""
+        from app import config
+        monkeypatch.setattr(config, "PROMPT_CHAR_BUDGET", 300)
+        nodes = [_para(i, "가" * 100) for i in range(10)]  # 노드당 약 132자
+        out, omitted = Orchestrator._prompt_nodes(nodes, [], selection=None)
+        assert 1 <= len(out) < 10
+        assert omitted == 10 - len(out)
+        assert [n["id"] for n in out] == list(range(len(out)))  # 앞에서부터 유지
+
+    def test_omitted_note_appended_to_edit_turn(self, monkeypatch):
+        """예산 초과 생략이 있으면 편집 결과 notes에 안내가 붙는다."""
+        import asyncio
+        from tests.test_orchestrator import FakeBackend
+        from app import config
+        monkeypatch.setattr(config, "PROMPT_CHAR_BUDGET", 300)
+
+        nodes = [_para(i, "나" * 100) for i in range(10)]
+        backend = FakeBackend([
+            '{"intent": "edit", "reply": "수정", "edits": [{"id": 0, "new_text": "새 텍스트"}]}',
+        ])
+        orch = Orchestrator(backend)
+        result = asyncio.run(orch.run_turn(
+            token="t", message="첫 문단 바꿔줘", history=[], doc_nodes=nodes,
+        ))
+        assert result.intent == "edit"
+        assert result.notes and "제외" in result.notes
 
     def test_fill_chunks_pack_small_groups_into_one_call(self):
         """상한 안에 들면 표·본문 그룹을 한 청크로 묶는다 (호출 수 최소화)."""
