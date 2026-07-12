@@ -96,7 +96,10 @@ class UniRagClient(LLMBackend):
             "top_k": top_k,
             "thinking": False,
         }
-        body.update(opts)  # 추가 옵션은 요청 바디에 그대로 병합
+        # 생성 길이 상한: 서버 기본값에 응답이 잘리는 문제 대응 (config 주석 참조)
+        if config.LLM_MAX_TOKENS > 0:
+            body["max_tokens"] = config.LLM_MAX_TOKENS
+        body.update(opts)  # 추가 옵션은 요청 바디에 그대로 병합 (max_tokens 재정의 가능)
         return body
 
     # ── 인증 (기존 시그니처·동작 유지 — routes_auth.py 사용 중) ──

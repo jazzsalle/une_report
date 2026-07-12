@@ -116,6 +116,38 @@ def test_chat_model_key_and_opts_override():
     assert body["thinking"] is True  # **opts가 기본값을 덮어쓴다
 
 
+# ── max_tokens (A5: 생성 길이 상한 동봉) ───────────────────────
+
+def _captured_body(**chat_kwargs) -> dict:
+    captured: dict = {}
+
+    def handler(request):
+        captured["body"] = json.loads(request.content)
+        return httpx.Response(200, json={"answer": "ok"})
+
+    _run(_client_with(handler).chat("q", token="t", **chat_kwargs))
+    return captured["body"]
+
+
+def test_chat_body_includes_max_tokens_by_default(monkeypatch):
+    from app import config
+    monkeypatch.setattr(config, "LLM_MAX_TOKENS", 4096)
+    assert _captured_body()["max_tokens"] == 4096
+
+
+def test_chat_max_tokens_opts_override(monkeypatch):
+    from app import config
+    monkeypatch.setattr(config, "LLM_MAX_TOKENS", 4096)
+    assert _captured_body(max_tokens=123)["max_tokens"] == 123
+
+
+def test_chat_max_tokens_omitted_when_zero(monkeypatch):
+    """LLM_MAX_TOKENS=0이면 필드를 보내지 않는다 (서버 기본값 사용)."""
+    from app import config
+    monkeypatch.setattr(config, "LLM_MAX_TOKENS", 0)
+    assert "max_tokens" not in _captured_body()
+
+
 @pytest.mark.parametrize("status", [401, 403])
 def test_chat_auth_error(status):
     def handler(request):

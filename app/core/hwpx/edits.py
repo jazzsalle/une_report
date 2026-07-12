@@ -12,16 +12,31 @@ T2의 HTML 변환기가 data-id로 노출하는 값과 동일한 체계다.
 - new_text가 원본과 공백 제거 후 동일하면 XML을 건드리지 않고 skip한다.
 - new_text의 개행(\\n)은 1차 범위에서 문단 분할 없이 공백으로 합쳐
   하나의 hp:t 안에서 처리한다(문단 복제 방식은 추후 확장).
+
+빈 노드(hp:t 없음) 채움 규칙 — 실양식의 빈 표 셀 대응:
+- 컨테이너(node.elem) 안에 기존 hp:run이 있으면(실측상 지배적: 한컴
+  빈 셀은 run만 있고 t가 없다) 그 첫 run에 hp:t를 추가한다.
+  run의 charPrIDRef가 그대로 적용되므로 글자 서식이 보존된다.
+- run이 없으면 컨테이너의 첫 hp:p에 hp:run+hp:t를 생성한다.
+  charPrIDRef는 섹션에서 처음 발견되는 run의 값을 복제하고, 없으면
+  속성을 생략한다(한컴 기본 서식). 문단 서식은 기존 hp:p의
+  paraPrIDRef가 그대로 유지된다.
+- hp:p조차 없는 컨테이너는 종전대로 skip한다.
 """
 import re
 import shutil
 import tempfile
 from dataclasses import dataclass, field
 from pathlib import Path
+from xml.etree import ElementTree as ET
 
+from .models import TextNode
 from .package import extract_hwpx, find_section_files, repack_hwpx
-from .parser import parse_section
-from .xml_utils import register_namespaces
+from .parser import collect_runs_and_texts, parse_section
+from .xml_utils import HWPX_NAMESPACES, register_namespaces, tag
+
+# t_ns를 문서에서 못 얻을 때(문서 전체에 hp:t가 0개) 쓰는 표준 네임스페이스
+_HP_NS = "{" + HWPX_NAMESPACES["hp"] + "}"
 
 # "p-0012" 같은 접두어 붙은 id에서 끝자리 숫자를 뽑는 패턴
 _TRAILING_DIGITS_RE = re.compile(r"(\d+)\s*$")
@@ -54,7 +69,7 @@ class EditResult:
 
     - applied_ids: 실제 XML이 변경된 전역 id 목록
     - skipped_ids: 건너뛴 전역 id 목록
-      (존재하지 않는 id · 원본과 동일한 텍스트 · hp:t가 전혀 없는 노드)
+      (존재하지 않는 id · 원본과 동일한 텍스트 · 삽입 앵커(hp:p)조차 없는 빈 노드)
     - output_path: 재패키징된 hwpx 경로
     - section_snapshots: 편집된 섹션 XML 사본 경로 목록
       (output 옆 "<출력파일명 stem>_sections/" 아래, DB 연동 대비)
@@ -86,6 +101,62 @@ def _set_node_text(node, new_text: str) -> None:
         for child in list(t):
             t.remove(child)
         t.text = new_text if i == 0 else ""
+
+
+def _find_first_p(elem: ET.Element) -> ET.Element | None:
+    """컨테이너 안의 첫 hp:p를 찾는다(표 내부 제외). elem 자신이 p면 그대로."""
+    if tag(elem) == "p":
+        return elem
+    for child in elem:
+        if tag(child) == "tbl":
+            continue
+        found = _find_first_p(child)
+        if found is not None:
+            return found
+    return None
+
+
+def _ensure_t_elem(
+    node: TextNode, t_ns: str, fallback_char_ref: str | None
+) -> ET.Element | None:
+    """빈 노드(hp:t 없음)에 hp:t를 생성 삽입해 반환한다. 앵커가 없으면 None.
+
+    모듈 docstring "빈 노드 채움 규칙" 참조. t_ns가 비어 있으면(문서 전체에
+    hp:t가 0개) 표준 hp 네임스페이스로 생성한다.
+    """
+    if node.elem is None:
+        return None
+    ns = t_ns or _HP_NS
+
+    # 1) 기존 run이 있으면 그 안에 t 추가 (charPrIDRef 서식 그대로 적용)
+    runs, _ts = collect_runs_and_texts(node.elem)
+    if runs:
+        return ET.SubElement(runs[0], f"{ns}t")
+
+    # 2) run이 없으면 첫 hp:p에 run+t 생성 (linesegarray 앞에 삽입)
+    p = _find_first_p(node.elem)
+    if p is None:
+        return None
+    run = ET.Element(f"{ns}run")
+    if fallback_char_ref:
+        run.set("charPrIDRef", fallback_char_ref)
+    insert_at = len(p)
+    for i, child in enumerate(p):
+        if tag(child) == "linesegarray":
+            insert_at = i
+            break
+    p.insert(insert_at, run)
+    return ET.SubElement(run, f"{ns}t")
+
+
+def _first_char_pr_ref(root: ET.Element) -> str | None:
+    """섹션에서 처음 발견되는 run의 charPrIDRef 값 (run 없는 문단 채움용)."""
+    for elem in root.iter():
+        if tag(elem) == "run":
+            ref = elem.get("charPrIDRef")
+            if ref:
+                return ref
+    return None
 
 
 def apply_edits(
@@ -120,7 +191,8 @@ def apply_edits(
         remaining = dict(edit_map)
         global_offset = 0
         for sf in section_files:
-            nodes, tree, _parent_map, _t_ns = parse_section(sf)
+            nodes, tree, _parent_map, t_ns = parse_section(sf)
+            fallback_char_ref = None  # 필요해질 때 1회만 탐색 (섹션 단위 캐시)
             changed = False
             for node in nodes:
                 gid = global_offset + node.id
@@ -131,8 +203,14 @@ def apply_edits(
                     result.skipped_ids.append(gid)  # 실질 동일 → XML 무변경
                     continue
                 if not node.t_elems:
-                    result.skipped_ids.append(gid)  # hp:t 없는 빈 셀 → 1차 범위 밖
-                    continue
+                    # hp:t 없는 빈 노드(실양식 빈 셀) → hp:t 생성 삽입 후 채움
+                    if fallback_char_ref is None:
+                        fallback_char_ref = _first_char_pr_ref(tree.getroot()) or ""
+                    new_t = _ensure_t_elem(node, t_ns, fallback_char_ref)
+                    if new_t is None:
+                        result.skipped_ids.append(gid)  # 삽입 앵커(hp:p) 없음
+                        continue
+                    node.t_elems = [new_t]
                 _set_node_text(node, _flatten_newlines(new_text))
                 result.applied_ids.append(gid)
                 changed = True

@@ -76,8 +76,9 @@ def test_scenario_c_selection_edit_only_changes_selected_nodes(
     formal_intro = "본 문서는 단위 테스트를 위하여 마련된 임시 양식입니다."
     formal_cycle = "연 1회 정기적으로 수립합니다."
     backend = FakeBackend([
-        '{"intent": "edit"}',
+        # 병합 응답: 분류+편집이 한 호출에 담긴다
         json.dumps({
+            "intent": "edit",
             "reply": "선택하신 부분을 격식 있는 문장으로 다듬었습니다",
             "edits": [
                 {"id": intro_id, "new_text": formal_intro},
@@ -99,8 +100,8 @@ def test_scenario_c_selection_edit_only_changes_selected_nodes(
     assert sorted(upd["changed_ids"]) == sorted(selection)
     assert formal_intro in upd["html"]
 
-    # 편집 프롬프트에는 선택 노드만 실린다 (비선택 노드 텍스트 부재)
-    edit_prompt = backend.calls[1][0]
+    # 병합 프롬프트에는 선택 노드만 실린다 (비선택 노드 텍스트 부재)
+    edit_prompt = backend.calls[0][0]
     assert "본 문서는 단위 테스트용" in edit_prompt
     assert "[주소 입력]" not in edit_prompt
 
@@ -137,8 +138,8 @@ def test_scenario_c_out_of_selection_edits_are_filtered(
     selection = [target_id]
 
     backend = FakeBackend([
-        '{"intent": "edit"}',
         json.dumps({
+            "intent": "edit",
             "reply": "수정했습니다",
             "edits": [
                 {"id": target_id, "new_text": "격식을 갖춘 개요 문장입니다."},
@@ -180,7 +181,10 @@ def test_scenario_d_query_leaves_document_unchanged_then_edit_applies(
     )
 
     answer = "대피 기준은 진도 4 이상 지진 또는 홍수주의보 발령 시 즉시 대피입니다."
-    backend = FakeBackend(['{"intent": "query"}', answer])
+    backend = FakeBackend([
+        # 병합 응답: 분류+답변이 한 호출에 담긴다
+        json.dumps({"intent": "query", "reply": answer}, ensure_ascii=False),
+    ])
     app.dependency_overrides[routes_chat.get_llm_backend] = lambda: backend
 
     # 1) 일반 질의 — document_updated 부재 + 문서 버전 [0] 그대로
@@ -196,8 +200,8 @@ def test_scenario_d_query_leaves_document_unchanged_then_edit_applies(
     first_para_id = _id_of(original, "본 문서는 단위 테스트용")
     filled = "대피 기준: 진도 4 이상 지진 또는 홍수주의보 발령 시 즉시 대피한다."
     backend.responses.extend([
-        '{"intent": "edit"}',
         json.dumps({
+            "intent": "edit",
             "reply": "답변 내용을 첫 문단에 반영했습니다",
             "edits": [{"id": first_para_id, "new_text": filled}],
         }, ensure_ascii=False),
@@ -212,9 +216,9 @@ def test_scenario_d_query_leaves_document_unchanged_then_edit_applies(
     assert ev2["document_updated"]["changed_ids"] == [first_para_id]
     assert _versions(client, token, doc_id) == [0, 1]
 
-    # 3) 두 번째 턴의 LLM 호출(분류+편집)에 이전 질의·답변이 history로 전달됐다
-    assert len(backend.calls) == 4  # 질의(분류+chat) + 편집(분류+edit)
-    for _query, history, opts in backend.calls[2:]:
+    # 3) 두 번째 턴의 LLM 호출(병합)에 이전 질의·답변이 history로 전달됐다
+    assert len(backend.calls) == 2  # 병합 경로: 질의 1회 + 편집 1회
+    for _query, history, opts in backend.calls[1:]:
         assert {"role": "user", "content": question} in history
         assert {"role": "assistant", "content": answer} in history
         assert opts["token"] == "rag-jwt-scenario-d"

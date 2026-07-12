@@ -30,7 +30,7 @@ from app.llm.base import (
     LlmTimeoutError,
     LlmUnavailableError,
 )
-from app.services.document_store import DocumentStore
+from app.services.document_store import DocumentStore, VersionConflictError
 from app.services.orchestrator import Orchestrator
 
 router = APIRouter(tags=["chat"])
@@ -54,6 +54,9 @@ class ChatRequest(BaseModel):
     document_id: str | None = None
     message: str
     selection: list[int] | None = None
+    # 버전 핀: 클라이언트가 미리보기 중인 버전. 문서의 현재 버전과 다르면
+    # (다른 탭에서 편집 등) LLM 호출 전에 version_conflict로 거부한다.
+    base_version: int | None = None
 
 
 def get_llm_backend() -> LLMBackend:
@@ -113,6 +116,20 @@ async def _chat_events(
         placeholders: list[dict] | None = None
         if document_id:
             try:
+                # 버전 핀 사전 검사 — LLM 호출 전에 어긋난 요청을 거부해 토큰 낭비 방지
+                if body.base_version is not None:
+                    current = store.get_current_version(user["id"], document_id)
+                    if body.base_version != current:
+                        yield _sse("error", {
+                            "code": "version_conflict",
+                            "message": (
+                                f"문서가 다른 곳에서 수정되었습니다"
+                                f" (기준 v{body.base_version}, 현재 v{current})."
+                                " 미리보기를 새로고침한 뒤 다시 시도해 주세요."
+                            ),
+                            "current_version": current,
+                        })
+                        return
                 doc_nodes = store.get_nodes(user["id"], document_id)
                 placeholders = store.get_placeholders(user["id"], document_id)
             except KeyError:
@@ -167,6 +184,7 @@ async def _chat_events(
             applied = store.apply_document_edits(
                 user["id"], document_id, result.edits,
                 summary=result.reply[:_SUMMARY_MAX], message_id=user_msg_id,
+                expected_version=body.base_version,  # 적용 직전 재검사 (경합 방어)
             )
             doc_update = {
                 "document_id": document_id,
@@ -209,6 +227,12 @@ async def _chat_events(
         })
     except (LlmUnavailableError, LlmError) as e:
         yield _sse("error", {"code": "llm_unavailable", "message": str(e)})
+    except VersionConflictError as e:
+        yield _sse("error", {
+            "code": "version_conflict",
+            "message": str(e),
+            "current_version": e.current,
+        })
     except (KeyError, ValueError) as e:
         yield _sse("error", {"code": "bad_request", "message": str(e)})
 

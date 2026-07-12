@@ -149,3 +149,44 @@ class TestChunkNodes:
         assert chunk_nodes([], max_nodes=5) == []
         with pytest.raises(ValueError):
             chunk_nodes([], max_nodes=0)
+
+
+class TestBracketExclusions:
+    """bracket 오탐 제외 (A3) — 캡션 번호·체크박스는 placeholder가 아니다."""
+
+    @staticmethod
+    def _node(nid: int, text: str):
+        from app.core.hwpx import TextNode
+        return TextNode(id=nid, type="body_text", text=text, raw_text=text)
+
+    def test_caption_numbers_excluded(self):
+        nodes = [
+            self._node(0, "[그림 1] 시설 배치도"),
+            self._node(1, "[표 12] 비상연락망"),
+            self._node(2, "[사진 3]"),
+            self._node(3, "[별표 1] 관련 규정"),
+            self._node(4, "[붙임 2] 서식"),
+        ]
+        assert collect_placeholders(nodes) == []
+
+    def test_checkboxes_excluded(self):
+        """실양식 실측: [ ]·[√] 체크박스가 placeholder로 오탐되지 않아야 한다."""
+        nodes = [
+            self._node(0, "동의함 [ ] 동의하지 않음 [  ]"),
+            self._node(1, "확인 [√]"),
+            self._node(2, "[V] 완료"),
+            self._node(3, "[○] 해당"),
+            self._node(4, "[x]"),
+        ]
+        assert collect_placeholders(nodes) == []
+
+    def test_normal_brackets_still_detected(self):
+        """정상 채움 표식은 계속 탐지된다 (숫자 없는 캡션 유사어 포함)."""
+        nodes = [
+            self._node(0, "[기관명]"),
+            self._node(1, "[그림 설명 입력]"),   # '그림'으로 시작해도 번호가 아니면 유지
+            self._node(2, "[주소 입력]"),
+        ]
+        hits = collect_placeholders(nodes)
+        assert {h.text for h in hits} == {"[기관명]", "[그림 설명 입력]", "[주소 입력]"}
+        assert all(h.pattern == "bracket" for h in hits)

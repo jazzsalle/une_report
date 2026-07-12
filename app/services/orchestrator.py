@@ -4,9 +4,13 @@
 DB·파일·FastAPI를 만지지 않는 순수 서비스 계층으로, `LLMBackend`만
 생성자 주입으로 받는다 (API 계층 T4가 이 계약을 그대로 소비한다).
 
-파이프라인 (DESIGN.md M4):
-- M4-1 의도 분류: 문서 없음 → 무조건 query. 문서 있음 → LLM 1회 분류,
-  JSON 실패·비정상 값이면 키워드 휴리스틱 폴백.
+파이프라인 (DESIGN.md M4 + 병합 개선):
+- 병합 경로(기본): 문서 있음 → 분류+응답을 한 프롬프트로 요청
+  (`build_turn_prompt`, 계약 {"intent","reply","edits","notes"}).
+  edit·query는 이 1회 호출로 종결, fill은 분류 결과만 쓰고 청크
+  파이프라인으로 위임. JSON 실패·비정상 intent면 아래 분리 경로로 폴백.
+- M4-1 의도 분류(폴백 경로): 문서 없음 → 무조건 query. 문서 있음 →
+  LLM 1회 분류, JSON 실패·비정상 값이면 키워드 휴리스틱 폴백.
 - M4-2·M4-4 편집: (selection 필터된) 노드 목록을 프롬프트에 실어
   `{"reply","edits","notes"}` JSON 수신 → normalize_edit_id 정수화 →
   문서에 없는 id 제거(notes 기록). 파싱 실패 시 1회 재요청, 재실패면
@@ -67,12 +71,74 @@ class Orchestrator:
             return await self._run_query(token, message, history)
 
         nodes = self._filter_selection(doc_nodes, selection)
+
+        # 병합 경로: 분류+응답을 1회 호출로 (실패 시 None → 분리 경로 폴백)
+        combined = await self._try_combined_turn(
+            token, message, history, nodes, placeholders or []
+        )
+        if combined is not None:
+            return combined
+
         intent = await self._classify_intent(token, message, history, placeholders)
         if intent == "edit":
             return await self._run_edit(token, message, history, nodes)
         if intent == "fill":
             return await self._run_fill(token, message, history, nodes, placeholders or [])
         return await self._run_query(token, message, history)
+
+    # ── 분류+응답 병합 경로 (턴당 LLM 1회) ─────────────────────
+
+    async def _try_combined_turn(
+        self,
+        token: str,
+        message: str,
+        history: list[dict],
+        nodes: list[dict],
+        placeholders: list[dict],
+    ) -> TurnResult | None:
+        """병합 프롬프트 1회로 분류+응답을 시도한다. 폴백이 필요하면 None.
+
+        - edit  → edits 검증 후 즉시 TurnResult (1회 종결)
+        - query → reply 그대로 TurnResult (1회 종결)
+        - fill  → 분류 결과만 사용하고 기존 청크 채움 파이프라인 실행
+        - JSON 파싱 실패·비정상 intent·빈 query 답변 → None (분리 경로 폴백)
+        LLM 연결 오류(LlmError 계열)는 종전과 동일하게 상위로 전파한다.
+        """
+        if not nodes:
+            return None  # 편집 대상 없음 — 분리 경로의 안내 메시지에 맡긴다
+        # placeholder도 노드 범위(selection 필터 후)로 좁힌다 — 프롬프트에
+        # 선택 밖 노드의 표식이 새어 들어가지 않게 (edits 검증과 동일 기준)
+        node_ids = {int(n["id"]) for n in nodes}
+        placeholders = [
+            p for p in placeholders if self._safe_id(p.get("id")) in node_ids
+        ]
+        prompt = prompts.build_turn_prompt(message, nodes, placeholders)
+        raw = await self.backend.chat(prompt, history, token=token)
+        try:
+            data = parse_llm_json(raw)
+        except LlmJsonParseError:
+            return None
+        if not isinstance(data, dict):
+            return None
+        intent = str(data.get("intent", "")).strip().lower()
+        if intent not in INTENTS:
+            return None
+        if intent == "fill":
+            return await self._run_fill(token, message, history, nodes, placeholders)
+        if intent == "query":
+            reply = self._extract_reply(data, default="")
+            if not reply:
+                return None  # 답변 없는 query는 분리 경로에서 재시도
+            return TurnResult(intent="query", reply=reply, edits=[])
+        valid_ids = {int(n["id"]) for n in nodes}
+        edits, local_notes = self._extract_edits(data, valid_ids)
+        reply = self._extract_reply(data, default=f"{len(edits)}개 항목을 수정했습니다.")
+        return TurnResult(
+            intent="edit",
+            reply=reply,
+            edits=edits,
+            notes=self._merge_notes(data, local_notes),
+        )
 
     # ── 의도 분류 (M4-1) ───────────────────────────────────────
 

@@ -137,7 +137,7 @@ export async function exportDocument(documentId, format = 'hwpx') {
  * (EventSource는 POST를 지원하지 않으므로 event:/data: 라인을 직접 파싱.
  *  빈 줄이 이벤트 경계이고, data: 가 여러 줄이면 \n으로 결합한다.)
  *
- * @param {{session_id?: string, document_id?: string, message: string, selection?: number[]}} payload
+ * @param {{session_id?: string, document_id?: string, message: string, selection?: number[], base_version?: number}} payload
  * @param {{onStatus?, onToken?, onDocumentUpdated?, onDone?, onError?}} callbacks
  */
 export async function streamChat(payload, callbacks = {}) {

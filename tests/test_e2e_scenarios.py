@@ -192,8 +192,9 @@ def test_scenario_a_fill_form_then_edit_then_export(env, demo_form_hwpx, tmp_pat
         gid for gid, n in nodes.items() if "<담당자 이름>" in n["text"]
     )
     backend.responses.extend([
-        '{"intent": "edit"}',
+        # 병합 응답: 분류+편집이 한 호출에 담긴다
         json.dumps({
+            "intent": "edit",
             "reply": "담당자를 홍길동으로 바꿨습니다",
             "edits": [{"id": manager_id, "new_text": "담당자: 홍길동"}],
         }, ensure_ascii=False),
@@ -246,8 +247,9 @@ def test_scenario_b_edit_existing_document_preserves_rest(env, demo_form_hwpx, t
     )
 
     backend = FakeBackend([
-        '{"intent": "edit"}',
+        # 병합 응답: 분류+편집이 한 호출에 담긴다
         json.dumps({
+            "intent": "edit",
             "reply": "해당 문단을 수정했습니다",
             "edits": [{"id": target_id, "new_text": "hwpx 문서 생성 고도화"}],
         }, ensure_ascii=False),

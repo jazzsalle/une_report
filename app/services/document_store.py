@@ -11,6 +11,7 @@ DB에는 경로·메타만 기록한다 (DESIGN.md §7).
 오류 규약 (라우터가 HTTP 상태로 매핑):
   - ValueError : 유효하지 않은 hwpx, 지원하지 않는 내보내기 형식 → 400
   - KeyError   : 문서 없음·소유자 아님·버전 없음 → 404
+  - VersionConflictError : 편집 기준 버전 ≠ 현재 버전 (버전 핀 불일치)
 """
 import json
 import shutil
@@ -36,6 +37,23 @@ from app.db.database import now_iso
 _NODE_TYPE_MAP = {"body_text": "para", "table_cell": "cell"}
 
 _EXPORT_FORMATS = ("hwpx", "docx")
+
+
+class VersionConflictError(ValueError):
+    """편집 기준 버전(base_version)이 문서의 현재 버전과 다름.
+
+    전역 id는 파싱 순번이라 버전이 다르면 같은 id가 다른 노드를 가리킬 수
+    있으므로, 클라이언트가 미리보기하던 버전과 현재 버전이 어긋나면 적용을
+    거부한다. 클라이언트는 최신 미리보기로 갱신 후 재시도해야 한다.
+    """
+
+    def __init__(self, expected: int, current: int):
+        super().__init__(
+            f"문서가 다른 곳에서 수정되었습니다 (기준 v{expected}, 현재 v{current}). "
+            "미리보기를 새로고침한 뒤 다시 시도해 주세요."
+        )
+        self.expected = expected
+        self.current = current
 
 
 class DocumentStore:
@@ -183,6 +201,10 @@ class DocumentStore:
             hits.extend(collect_placeholders(nodes, id_offset=offset))
         return [{"id": h.id, "token": h.text} for h in hits]
 
+    def get_current_version(self, user_id: int, document_id: str) -> int:
+        """문서의 현재 버전 번호 (버전 핀 사전 검사용)."""
+        return self._get_doc(user_id, document_id)["current_version"]
+
     def apply_document_edits(
         self,
         user_id: int,
@@ -190,10 +212,18 @@ class DocumentStore:
         edits: list[dict],
         summary: str | None = None,
         message_id: int | None = None,
+        expected_version: int | None = None,
     ) -> dict:
-        """edits를 현재 버전에 적용해 새 버전(hwpx+HTML 캐시+DB 행)을 만든다."""
+        """edits를 현재 버전에 적용해 새 버전(hwpx+HTML 캐시+DB 행)을 만든다.
+
+        expected_version(버전 핀)이 주어지면 적용 직전 현재 버전과 비교해
+        다르면 VersionConflictError를 던진다 (edits의 id가 그 버전의 노드
+        순번을 기준으로 만들어졌기 때문).
+        """
         doc = self._get_doc(user_id, document_id)
         current = doc["current_version"]
+        if expected_version is not None and expected_version != current:
+            raise VersionConflictError(expected_version, current)
         src = self._version_hwpx(document_id, current)
         if not src.is_file():
             raise KeyError(f"버전 파일이 없음: {document_id} v{current}")

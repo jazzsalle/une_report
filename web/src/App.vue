@@ -198,6 +198,21 @@ async function onFileChange(e) {
   }
 }
 
+/** 서버 최신 버전으로 미리보기를 다시 로드한다 (버전 충돌 복구용) */
+async function refreshPreview(version) {
+  if (!doc.value) return
+  try {
+    const preview = await getPreview(doc.value.id, version)
+    previewHtml.value = preview.html
+    doc.value.pages = preview.page_count
+    doc.value.version = preview.version
+    changedIds.value = []
+    selectedIds.value = []
+  } catch {
+    // 갱신 실패는 배너 메시지로 충분 — 다음 상호작용에서 재시도된다
+  }
+}
+
 // ---------------------------------------------------------------- 다운로드
 
 async function download() {
@@ -241,7 +256,10 @@ async function sendMessage(text) {
 
   const payload = { message: text }
   if (sessionId.value) payload.session_id = sessionId.value
-  if (doc.value) payload.document_id = doc.value.id
+  if (doc.value) {
+    payload.document_id = doc.value.id
+    payload.base_version = doc.value.version // 버전 핀: 미리보기 중인 버전 기준으로만 적용
+  }
   if (selectedIds.value.length) payload.selection = [...selectedIds.value]
 
   await streamChat(payload, {
@@ -275,6 +293,13 @@ async function sendMessage(text) {
       statusText.value = ''
       if (data.code === 'auth') {
         logout('인증이 만료되었습니다. 다시 로그인하세요.')
+        return
+      }
+      if (data.code === 'version_conflict') {
+        // 문서가 다른 곳에서 수정됨 — 최신 미리보기로 갱신해 다시 시도할 수 있게 한다
+        banner.value = data.message || '문서가 다른 곳에서 수정되었습니다. 미리보기를 갱신했습니다.'
+        if (doc.value && data.current_version != null) refreshPreview(data.current_version)
+        if (!assistant.content) assistant.content = '(문서 버전 충돌로 요청이 적용되지 않았습니다.)'
         return
       }
       const label =

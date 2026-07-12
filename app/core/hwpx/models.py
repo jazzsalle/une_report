@@ -17,6 +17,8 @@ class TextNode:
     - table_idx/row/col: 표 셀일 때만 유효(본문이면 -1)
     - t_elems: 이 노드에 속한 hp:t ET Element 참조 목록.
       apply_edits 단계에서 이 참조를 통해 원본 트리를 부분 수정한다.
+    - elem: 노드의 컨테이너 요소 참조(table_cell이면 hp:tc, body_text면 hp:p).
+      t_elems가 비어 있는 빈 노드에 hp:t를 생성 삽입할 때 앵커로 쓴다.
     """
 
     id: int
@@ -31,6 +33,7 @@ class TextNode:
     cell_width_mm: int = 0
     cell_height_mm: int = 0
     t_elems: list[ET.Element] = field(default_factory=list)
+    elem: ET.Element | None = None
 
 
 @dataclass

@@ -27,6 +27,22 @@ PLACEHOLDER_PATTERNS: dict[str, re.Pattern] = {
     "filler": re.compile(r"○○+|XX+|xx+|\bTBD\b|\bTODO\b"),
 }
 
+# bracket 오탐 제외 패턴 (실양식·샘플 템플릿 실측 근거):
+# - 캡션 번호([그림 1], [표 2], [사진 3], [별표 1], [붙임 2]) — 채움 대상이 아님
+# - 체크박스([ ], [√], [V], [○] 등 내용이 공백·체크 기호뿐) — 체크 표기·해제는
+#   placeholder 채움이 아니라 edit 의도의 텍스트 교체로 처리한다
+_BRACKET_EXCLUDES: tuple[re.Pattern, ...] = (
+    re.compile(r"^\[(?:그림|표|사진|별표|붙임|서식|부록)\s*\d+\]$"),
+    re.compile(r"^\[[\s√✓✔vVxX○●◯]*\]$"),
+)
+
+
+def _is_excluded(pattern_name: str, matched: str) -> bool:
+    """탐지된 표식이 오탐 제외 대상인지 판정한다 (현재는 bracket만 해당)."""
+    if pattern_name != "bracket":
+        return False
+    return any(ex.match(matched) for ex in _BRACKET_EXCLUDES)
+
 
 @dataclass
 class PlaceholderHit:
@@ -67,6 +83,8 @@ def collect_placeholders(nodes: list[TextNode], id_offset: int = 0) -> list[Plac
             continue
         for name, pattern in PLACEHOLDER_PATTERNS.items():
             for m in pattern.finditer(text):
+                if _is_excluded(name, m.group(0)):
+                    continue  # 캡션 번호·체크박스 등 오탐 제외
                 hits.append(PlaceholderHit(
                     id=id_offset + node.id, text=m.group(0), pattern=name,
                 ))

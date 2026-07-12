@@ -11,6 +11,10 @@ load_dotenv(BASE_DIR / ".env")
 UNI_RAG_BASE_URL = os.getenv("UNI_RAG_BASE_URL", "http://221.147.100.161:8000")
 UNI_RAG_MODEL_KEY = os.getenv("UNI_RAG_MODEL_KEY", "qwen3-coder-next")
 UNI_RAG_TIMEOUT = float(os.getenv("UNI_RAG_TIMEOUT", "120"))
+# /chat/ 요청에 동봉하는 생성 길이 상한. 서버(vLLM) 기본값(512~1024 추정)에
+# 응답이 잘리는 문제 대응. 0이면 필드를 보내지 않는다(서버 기본값 사용).
+# 서버가 필드를 무시할 수 있음 — passthrough 여부는 담당자 협의 대상.
+LLM_MAX_TOKENS = int(os.getenv("LLM_MAX_TOKENS", "4096"))
 
 # 저장소
 DATA_DIR = Path(os.getenv("DATA_DIR", BASE_DIR / "data"))

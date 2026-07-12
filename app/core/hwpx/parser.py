@@ -157,6 +157,7 @@ def parse_section(
                     cell_width_mm=round(cell_width / HWP_UNITS_PER_MM) if cell_width > 0 else 0,
                     cell_height_mm=round(cell_height / HWP_UNITS_PER_MM) if cell_height > 0 else 0,
                     t_elems=t_elems,
+                    elem=tc,
                 ))
                 next_id[0] += 1
 
@@ -179,6 +180,7 @@ def parse_section(
             id=next_id[0], type="body_text",
             text=raw_text.strip(), raw_text=raw_text,
             t_elems=t_elems,
+            elem=p_elem,
         ))
         next_id[0] += 1
 
