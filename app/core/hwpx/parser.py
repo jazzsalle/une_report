@@ -26,7 +26,7 @@ from pathlib import Path
 from xml.etree import ElementTree as ET
 
 from .models import HWP_UNITS_PER_MM, TextNode
-from .xml_utils import ns, register_namespaces, tag
+from .xml_utils import ns, register_namespaces, t_full_text, tag
 
 # NOTE: style_mapper 연동 훅 — 스타일 해석(charPr/paraPr/borderFill)이 필요해지면
 # 여기서 header.xml 기반 StyleMaps를 받아 run 요소들로부터 스타일을 해석한다.
@@ -94,8 +94,8 @@ def _collect_guide_text(runs: list[ET.Element], guide_char_ids: set[str]) -> str
         if run.get("charPrIDRef") not in guide_char_ids:
             continue
         for child in run:
-            if tag(child) == "t" and child.text:
-                parts.append(child.text)
+            if tag(child) == "t":
+                parts.append(t_full_text(child))
     return "".join(parts).strip()
 
 
@@ -130,7 +130,8 @@ def parse_section(
             break
 
     def _joined_text(t_elems: list[ET.Element]) -> str:
-        return "".join((t.text or "") for t in t_elems)
+        # t.text만 읽으면 hp:fwSpace 등 자식 요소 뒤 tail 텍스트가 유실된다
+        return "".join(t_full_text(t) for t in t_elems)
 
     def _process_table(tbl_elem: ET.Element, tbl_idx: int) -> None:
         for tr in tbl_elem:

@@ -114,6 +114,61 @@ class TestHtmlInvariant:
         assert "[주소 입력]" in html
 
 
+class TestInlineElementTails:
+    """hp:t 자식 특수문자 요소(fwSpace 등)의 tail 텍스트 보존.
+
+    한컴은 전각 공백 등을 hp:t의 자식 요소로 저장하고 뒤 텍스트를 tail에 둔다.
+    t.text만 읽으면 tail이 유실된다 — 실양식에서 제목 문단 전체가 미리보기·
+    프롬프트에서 사라진 원인 (ouputs/html 미리보기 오류.png 실측).
+    """
+
+    @pytest.fixture
+    def fwspace_hwpx(self, demo_form_hwpx, tmp_path) -> Path:
+        """demo 문서의 두 hp:t를 fwSpace-tail 구조로 바꿔 실양식을 재현한다.
+
+        - 본문 문단: t.text 뒤에 <fwSpace/> + tail (부분 유실 케이스)
+        - 제목 문단: t.text 없이 <fwSpace/> tail만 (전체 유실 케이스)
+        """
+        from xml.etree import ElementTree as ET
+
+        from app.core.hwpx.package import repack_hwpx
+        from app.core.hwpx.xml_utils import HWPX_NAMESPACES, register_namespaces, tag
+
+        hp = "{" + HWPX_NAMESPACES["hp"] + "}"
+        extract_dir = tmp_path / "fwspace_src"
+        compress_info, file_order = extract_hwpx(demo_form_hwpx, extract_dir)
+        sf = find_section_files(extract_dir)[0]
+        register_namespaces(sf)
+        tree = ET.parse(sf)
+        ts = {t.text: t for t in tree.getroot().iter() if tag(t) == "t"}
+
+        t_body = ts["본 문서는 단위 테스트용 임시 양식이다."]
+        t_body.text = "본 문서는"
+        fw = ET.SubElement(t_body, f"{hp}fwSpace")
+        fw.tail = "꼬리에 실린 본문 텍스트"
+
+        t_title = ts["재난 대응 계획서 (테스트)"]
+        t_title.text = ""
+        fw2 = ET.SubElement(t_title, f"{hp}fwSpace")
+        fw2.tail = "① 전체가 tail인 제목"
+
+        tree.write(sf, xml_declaration=True, encoding="utf-8")
+        out = tmp_path / "fwspace.hwpx"
+        repack_hwpx(extract_dir, out, compress_info, file_order)
+        return out
+
+    def test_parser_keeps_tail_text(self, fwspace_hwpx, tmp_path):
+        texts = [n.text for _gid, n in _parse_all_sections(fwspace_hwpx, tmp_path)]
+        assert "본 문서는　꼬리에 실린 본문 텍스트" in texts  # 전각 공백 포함
+        assert "① 전체가 tail인 제목" in texts, \
+            "t.text가 빈 문단도 tail 텍스트로 노드화돼야 한다"
+
+    def test_html_renders_tail_text(self, fwspace_hwpx):
+        html = hwpx_to_html(fwspace_hwpx).html
+        assert "꼬리에 실린 본문 텍스트" in html
+        assert "① 전체가 tail인 제목" in html
+
+
 class TestHtmlOptions:
     def test_inject_ids_false(self, report_table_hwpx):
         """inject_ids=False면 data-id가 전혀 없고 .page div는 존재해야 한다."""

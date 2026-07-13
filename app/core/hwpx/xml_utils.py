@@ -46,6 +46,32 @@ def ns(elem: ET.Element) -> str:
     return ""
 
 
+# hp:t 내부 인라인 특수문자 요소 → 대응 문자.
+# 여기 없는 요소(markpenBegin/End 등 마커류)는 문자 없이 tail만 보존한다.
+_T_INLINE_CHARS: dict[str, str] = {
+    "tab": "\t",
+    "lineBreak": "\n",
+    "fwSpace": "　",  # 전각 공백
+    "nbSpace": " ",  # 줄바꿈 없는 공백
+    "hyphen": "-",
+}
+
+
+def t_full_text(t_elem: ET.Element) -> str:
+    """hp:t의 전체 텍스트를 반환한다 — 자식 특수문자 요소와 그 tail 포함.
+
+    한컴은 전각 공백(hp:fwSpace)·탭 등을 hp:t의 자식 요소로 저장하고,
+    뒤따르는 텍스트를 그 요소의 tail에 둔다. t.text만 읽으면 tail이
+    통째로 유실된다 (2026-07-13 실측: fwSpace로 시작하는 제목 문단이
+    미리보기·프롬프트에서 통째로 사라짐 — ouputs/html 미리보기 오류.png).
+    """
+    parts = [t_elem.text or ""]
+    for child in t_elem:
+        parts.append(_T_INLINE_CHARS.get(tag(child), ""))
+        parts.append(child.tail or "")
+    return "".join(parts)
+
+
 def register_namespaces(xml_path: str | Path) -> None:
     """표준 hwpx 프리픽스와 해당 XML 파일이 선언한 프리픽스를 전역 등록한다.
 

@@ -36,7 +36,7 @@ from xml.etree import ElementTree as ET
 from .package import extract_hwpx, find_section_files
 # 노드 순번 규칙의 단일 소스를 유지하기 위해 parser의 내부 헬퍼를 공유한다.
 from .parser import _find_toplevel_tables, collect_runs_and_texts, parse_section
-from .xml_utils import tag
+from .xml_utils import t_full_text, tag
 
 __all__ = ["HtmlResult", "hwpx_to_html"]
 
@@ -511,7 +511,8 @@ def _render_paragraph(p_elem: ET.Element, ctx: _RenderCtx) -> str:
         for child in run:
             ctag = tag(child)
             if ctag == "t":
-                text = escape(child.text or "")
+                # 자식 요소(fwSpace 등) 뒤 tail 포함 전체 텍스트 — t.text만 읽으면 유실
+                text = escape(t_full_text(child)).replace("\n", "<br/>")
                 if text:
                     segments.append(f"<span{span_cls}>{text}</span>" if span_cls else text)
             elif ctag == "tbl":
