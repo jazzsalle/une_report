@@ -260,3 +260,23 @@ class TestSessionPersistence:
         events2 = _chat(client, intruder_token, {"message": "훔친 세션", "session_id": session_id})
         assert events2[0][0] == "error"
         assert events2[0][1]["code"] == "bad_request"
+
+
+# ---------------------------------------------------------------------------
+# 진행 status 이벤트 (fill 청크 진행 중계)
+# ---------------------------------------------------------------------------
+
+class TestProgressStatus:
+    def _upload_doc(self, client, token, tmp_path):
+        """문서 라우터 없이도 되는 테스트용 — 문서 없는 fill은 불가하므로
+        문서 컨텍스트가 필요한 시나리오는 e2e 픽스처를 쓴다. 여기서는
+        문서 없이 query만 확인하는 대신, doc 관련 진행 테스트는
+        test_e2e_scenarios 쪽 헬퍼를 재사용한다."""
+
+    def test_query_turn_has_no_progress_status(self, env):
+        """진행 통지가 없는 턴(query)은 기존 이벤트 순서 그대로다."""
+        client, db, app = env
+        _, token = _make_user(db, "no-progress")
+        _use_backend(app, FakeBackend(["그냥 답변"]))
+        events = _chat(client, token, {"message": "안녕?"})
+        assert [name for name, _ in events] == ["status", "token", "done"]

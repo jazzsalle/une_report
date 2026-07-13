@@ -506,3 +506,38 @@ def test_stream_connection_error_propagates():
     backend = StreamFakeBackend([LlmUnavailableError("서버 다운")])
     with pytest.raises(LlmUnavailableError):
         _turn(backend, message="바꿔줘", doc_nodes=_nodes(2))
+
+
+# ── 9. 진행 통지 콜백 (on_progress) ──────────────────────────────
+
+def test_on_progress_called_per_fill_chunk():
+    """fill 청크마다 on_progress가 {phase,current,total,detail}로 호출된다."""
+    backend = FakeBackend([
+        '{"intent": "fill", "reply": ""}',
+        '{"reply": "1", "edits": [{"id": 1, "new_text": "값1"}]}',
+        '{"reply": "2", "edits": [{"id": 31, "new_text": "값2"}]}',
+    ])
+    events: list[dict] = []
+
+    async def _on_progress(ev):
+        events.append(ev)
+
+    orch = Orchestrator(backend)
+    result = _run(orch.run_turn(
+        token=TOKEN, message="이 양식을 작성해줘", history=HISTORY,
+        doc_nodes=_nodes(60), on_progress=_on_progress,
+    ))
+    assert result.intent == "fill"
+    assert [(e["current"], e["total"]) for e in events] == [(1, 2), (2, 2)]
+    assert all(e["phase"] == "fill_chunk" for e in events)
+    assert "1/2" in events[0]["detail"]
+
+
+def test_on_progress_absent_is_noop():
+    """on_progress 미전달(기존 호출부)은 종전과 완전히 동일하게 동작한다."""
+    backend = FakeBackend([
+        '{"intent": "fill", "reply": ""}',
+        '{"reply": "채움", "edits": [{"id": 0, "new_text": "값"}]}',
+    ])
+    result = _turn(backend, message="이 양식을 작성해줘", doc_nodes=_nodes(3))
+    assert result.edits == [{"id": 0, "new_text": "값"}]

@@ -25,6 +25,7 @@ DB·파일·FastAPI를 만지지 않는 순수 서비스 계층으로, `LLMBacke
 - query: backend.chat 응답을 그대로 reply로.
 """
 from dataclasses import dataclass
+from typing import Awaitable, Callable
 
 from app import config
 from app.core.hwpx.edits import normalize_edit_id
@@ -51,6 +52,10 @@ async def _single_delta(raw: str):
     yield raw
 
 
+# 진행 통지 콜백: {"phase","current","total","detail"} — routes_chat이 SSE status로 중계
+ProgressCallback = Callable[[dict], Awaitable[None]]
+
+
 # LLM 응답이 max_tokens로 잘려 부분만 복구·반영했을 때의 사용자 안내
 _TRUNCATED_NOTE = (
     "LLM 응답이 길이 제한으로 잘려 일부 항목만 반영되었습니다. "
@@ -73,6 +78,7 @@ class Orchestrator:
 
     def __init__(self, backend: LLMBackend):
         self.backend = backend
+        self._on_progress: ProgressCallback | None = None
 
     # ── 공개 API ───────────────────────────────────────────────
 
@@ -85,8 +91,10 @@ class Orchestrator:
         doc_nodes: list[dict] | None = None,    # [{"id","text","type"}]
         placeholders: list[dict] | None = None,  # [{"id","token"}]
         selection: list[int] | None = None,
+        on_progress: ProgressCallback | None = None,  # 진행 통지 (SSE status 중계용)
     ) -> TurnResult:
         """사용자 발화 한 턴을 처리해 TurnResult를 반환한다."""
+        self._on_progress = on_progress
         if not doc_nodes:
             # 문서가 없으면 편집·채움이 성립하지 않으므로 무조건 query
             return await self._run_query(token, message, history)
@@ -338,6 +346,13 @@ class Orchestrator:
         failed_chunks = 0
         last_parse_err: LlmJsonParseError | None = None
         for i, chunk in enumerate(chunks):
+            if self._on_progress is not None:
+                await self._on_progress({
+                    "phase": "fill_chunk",
+                    "current": i + 1,
+                    "total": len(chunks),
+                    "detail": f"양식 채움 진행 중 ({i + 1}/{len(chunks)} 구간)",
+                })
             chunk_ids = {int(n["id"]) for n in chunk}
             chunk_ph = [
                 p for p in placeholders

@@ -1,7 +1,9 @@
 """POST /api/chat — SSE 대화 (M4 오케스트레이터 ↔ M5 저장소 연결).
 
 이벤트 계약 (web/src/api.js streamChat이 이대로 소비 — 변경 금지):
-  `status` → `token` → [`document_updated`] → `done`, 실패 시 `error` 후 종료.
+  `status`*(진행 통지, 0회 이상) → `status` → `token` → [`document_updated`]
+  → `done`, 실패 시 `error` 후 종료. (api.js는 status 반복을 허용하므로
+  진행 status 추가는 프론트 무수정으로 호환된다)
 와이어 포맷은 `event: <name>\\ndata: <json>\\n\\n`. SSE가 시작되면 HTTP
 상태코드를 바꿀 수 없으므로 처리 오류도 200 + `error` 이벤트로 낸다.
 
@@ -10,6 +12,7 @@
   → user 메시지 저장 → Orchestrator.run_turn → edits 있으면
   apply_document_edits(새 버전) → assistant 메시지 저장 → 이벤트 송출.
 """
+import asyncio
 import json
 import sqlite3
 import uuid
@@ -47,6 +50,9 @@ _INTENT_DETAILS = {
     "fill": "양식 채움을 수행했습니다",
     "query": "일반 질의에 응답합니다",
 }
+
+# run_turn 완료를 진행 큐에 알리는 센티널
+_PROGRESS_DONE = object()
 
 
 class ChatRequest(BaseModel):
@@ -167,14 +173,31 @@ async def _chat_events(
         db.commit()
 
         # 5) LLM 파이프라인 (M4) → 필요 시 문서 편집 적용 (M5)
-        result = await Orchestrator(backend).run_turn(
+        #    run_turn을 태스크로 돌리고, 진행 통지(fill 청크 등)를 SSE status로
+        #    중계한다. 최종 이벤트 계약(status→token→[document_updated]→done)은
+        #    불변 — 진행 status가 앞에 0회 이상 끼는 것만 추가된다.
+        progress_q: asyncio.Queue = asyncio.Queue()
+
+        async def _on_progress(ev: dict) -> None:
+            await progress_q.put(ev)
+
+        task = asyncio.create_task(Orchestrator(backend).run_turn(
             token=rag_jwt,
             message=message,
             history=history,
             doc_nodes=doc_nodes,
             placeholders=placeholders,
             selection=body.selection,
-        )
+            on_progress=_on_progress,
+        ))
+        task.add_done_callback(lambda _t: progress_q.put_nowait(_PROGRESS_DONE))
+        while (ev := await progress_q.get()) is not _PROGRESS_DONE:
+            yield _sse("status", {
+                "intent": "fill" if ev.get("phase") == "fill_chunk" else "progress",
+                "detail": ev.get("detail", ""),
+                "progress": {"current": ev.get("current"), "total": ev.get("total")},
+            })
+        result = task.result()  # 예외는 아래 except 매핑으로 그대로 전파
         display_text = result.reply
         if result.notes:
             display_text += f"\n\n[참고] {result.notes}"

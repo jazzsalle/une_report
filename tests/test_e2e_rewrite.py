@@ -85,3 +85,46 @@ def test_rewrite_fills_stub_template_and_clears_old_body(env, tmp_path):
     assert texts[title_id] == "호우 위기 대응 매뉴얼"
     assert texts[old_body_id] == ""          # 구조만 남고 내용은 삭제됨
     assert texts[header_id] == "위기 단계"
+
+
+def test_fill_progress_status_events_stream_order(env, tmp_path):
+    """다청크 fill에서 진행 status가 먼저 흐르고 최종 이벤트 계약은 불변이다.
+
+    이벤트 순서: status*(진행, 청크 수만큼) → status(최종) → token
+    → document_updated → done.
+    """
+    from tests.test_chat_api import parse_sse
+
+    client, db, files_dir, app = env
+    _user_id, token = _make_user(db, "progress-user")
+
+    big = tmp_path / "big_form.hwpx"
+    build_hwpx({"title": "제목", "paragraphs": [f"문단 {i}" for i in range(40)]}, big)
+    doc_id = _upload(client, token, big)["document_id"]
+
+    backend = FakeBackend([
+        '{"intent": "fill"}',                                        # 병합: fill 위임
+        '{"reply": "1"}\n{"id": 1, "new_text": "값1"}\n{"notes": ""}',  # 청크 1 (JSONL)
+        '{"reply": "2"}\n{"notes": ""}',                              # 청크 2
+    ])
+    app.dependency_overrides[routes_chat.get_llm_backend] = lambda: backend
+
+    resp = client.post("/api/chat", headers=_auth(token), json={
+        "document_id": doc_id, "message": "호우 매뉴얼 내용으로 작성해줘",
+    })
+    assert resp.status_code == 200
+    events = parse_sse(resp.text)
+    names = [n for n, _ in events]
+
+    # 진행 status: 청크 수(2)만큼, progress 필드 포함
+    progress = [d for n, d in events if n == "status" and "progress" in d]
+    assert [(p["progress"]["current"], p["progress"]["total"]) for p in progress] == [
+        (1, 2), (2, 2),
+    ]
+    assert all("진행 중" in p["detail"] for p in progress)
+
+    # 최종 이벤트 계약 불변: 마지막 4개가 status → token → document_updated → done
+    assert names[-4:] == ["status", "token", "document_updated", "done"]
+    final_status = events[len(names) - 4][1]
+    assert final_status["intent"] == "fill"
+    assert "progress" not in final_status
