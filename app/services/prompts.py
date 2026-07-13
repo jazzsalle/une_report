@@ -108,7 +108,8 @@ def build_intent_prompt(message: str, *, has_placeholders: bool = False) -> str:
 # ── 분류+응답 병합 (M4 개선 — 턴당 LLM 1회) ─────────────────────
 
 def build_turn_prompt(
-    message: str, nodes: list[dict], placeholders: list[dict]
+    message: str, nodes: list[dict], placeholders: list[dict],
+    numbering_rule: str = "",
 ) -> str:
     """의도 분류와 본 작업(편집/질의 답변)을 한 번에 요청하는 병합 프롬프트.
 
@@ -143,6 +144,7 @@ def build_turn_prompt(
         "- 지시와 무관한 노드는 edits에 넣지 마라.\n"
         "- id는 위 목록에 있는 값만 그대로 사용하라 (새 id를 만들지 마라).\n"
         "- new_text는 해당 노드의 전체 텍스트를 대체할 완성된 문장으로 써라.\n"
+        f"{numbering_rule + chr(10) if numbering_rule else ''}"
         "- 다른 설명 없이 아래 형식의 JSON 객체 하나만 출력하라.\n\n"
         f"{TURN_JSON_EXAMPLE}"
     )
@@ -150,7 +152,9 @@ def build_turn_prompt(
 
 # ── 편집 지시 (M4-2·M4-4) ───────────────────────────────────────
 
-def build_edit_prompt(message: str, nodes: list[dict]) -> str:
+def build_edit_prompt(
+    message: str, nodes: list[dict], numbering_rule: str = ""
+) -> str:
     """문서 노드 목록 + 편집 지시 → edits JSON을 요청하는 프롬프트."""
     return (
         "당신은 hwpx 문서 편집 도우미다. 아래 문서 노드 목록에서 사용자 지시에 "
@@ -162,6 +166,7 @@ def build_edit_prompt(message: str, nodes: list[dict]) -> str:
         "- 지시와 무관한 노드는 edits에 넣지 마라.\n"
         "- id는 위 목록에 있는 값만 그대로 사용하라 (새 id를 만들지 마라).\n"
         "- new_text는 해당 노드의 전체 텍스트를 대체할 완성된 문장으로 써라.\n"
+        f"{numbering_rule + chr(10) if numbering_rule else ''}"
         "- 다른 설명 없이 아래 형식의 JSON 객체 하나만 출력하라.\n\n"
         f"{EDIT_JSON_EXAMPLE}"
     )
@@ -170,7 +175,8 @@ def build_edit_prompt(message: str, nodes: list[dict]) -> str:
 # ── 템플릿 채움 (M4-3) ──────────────────────────────────────────
 
 def build_fill_prompt(
-    message: str, nodes: list[dict], placeholders: list[dict]
+    message: str, nodes: list[dict], placeholders: list[dict],
+    numbering_rule: str = "",
 ) -> str:
     """노드 청크 → 구조 인식 재작성 edits JSON을 요청하는 프롬프트 (C).
 
@@ -206,6 +212,7 @@ def build_fill_prompt(
         "맞춰 실제 내용을 작성하고, 지시문 자체는 new_text에 남기지 마라.\n"
         "- placeholder([기관명], <담당자>, YYYY년, ○○ 등)는 실제 값으로 바꿔라.\n"
         "- 원문을 그대로 유지할 노드만 edits에서 생략하라 (기본은 전량 재작성).\n"
+        f"{numbering_rule + chr(10) if numbering_rule else ''}"
         "- 분량: 서술형 문단([유형] para)의 new_text는 공문서 문체로 3~5문장의 "
         "완결된 서술로 작성하고, 표 셀은 1~2문장(또는 항목명·수치 등 셀 성격에 "
         "맞는 값)으로 간결하게 작성하라. 한두 구절로 얼버무리지 마라.\n"

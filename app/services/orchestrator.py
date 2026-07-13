@@ -30,7 +30,7 @@ from app import config
 from app.core.hwpx.edits import normalize_edit_id
 from app.llm.base import LLMBackend, LlmJsonParseError
 from app.llm.json_parser import parse_llm_json
-from app.services import prompts
+from app.services import numbering, prompts
 
 # 노드 한 줄 직렬화 시 텍스트 외 고정 오버헤드 추정치 (id·좌표·유형 표기)
 _NODE_LINE_OVERHEAD = 32
@@ -173,7 +173,11 @@ class Orchestrator:
         prompt_placeholders = [
             p for p in placeholders if self._safe_id(p.get("id")) in node_ids
         ]
-        prompt = prompts.build_turn_prompt(message, prompt_nodes, prompt_placeholders)
+        # 항목 체계는 전체 노드에서 감지 (축소 목록 밖 기호도 반영)
+        rule = numbering.build_numbering_rule(numbering.detect_item_scheme(nodes))
+        prompt = prompts.build_turn_prompt(
+            message, prompt_nodes, prompt_placeholders, numbering_rule=rule
+        )
         raw = await self.backend.chat(prompt, history, token=token)
         try:
             data = parse_llm_json(raw)
@@ -246,7 +250,8 @@ class Orchestrator:
                 edits=[],
                 notes="selection에 해당하는 문서 노드가 없음",
             )
-        prompt = prompts.build_edit_prompt(message, nodes)
+        rule = numbering.build_numbering_rule(numbering.detect_item_scheme(nodes))
+        prompt = prompts.build_edit_prompt(message, nodes, numbering_rule=rule)
         data = await self._chat_json_object(token, prompt, history)
         valid_ids = {int(n["id"]) for n in nodes}
         edits, local_notes = self._extract_edits(data, valid_ids)
@@ -306,6 +311,9 @@ class Orchestrator:
                 "채웠습니다. 나머지는 미리보기에서 선택 후 요청하세요."
             )
 
+        # 항목 체계는 문서 전체에서 1회 감지해 모든 청크에 동일하게 적용
+        # (청크에는 기호가 안 보여도 문서의 체계를 이어받게 한다)
+        rule = numbering.build_numbering_rule(numbering.detect_item_scheme(nodes))
         merged: dict[int, str] = {}
         for chunk in self._fill_chunks(targets, FILL_CHUNK_SIZE):
             chunk_ids = {int(n["id"]) for n in chunk}
@@ -313,7 +321,9 @@ class Orchestrator:
                 p for p in placeholders
                 if self._safe_id(p.get("id")) in chunk_ids
             ]
-            prompt = prompts.build_fill_prompt(message, chunk, chunk_ph)
+            prompt = prompts.build_fill_prompt(
+                message, chunk, chunk_ph, numbering_rule=rule
+            )
             data = await self._chat_json_object(token, prompt, history)
             edits, local_notes = self._extract_edits(data, chunk_ids)
             for e in edits:
