@@ -29,7 +29,7 @@ from dataclasses import dataclass
 from app import config
 from app.core.hwpx.edits import normalize_edit_id
 from app.llm.base import LLMBackend, LlmJsonParseError
-from app.llm.json_parser import parse_llm_json
+from app.llm.json_parser import parse_llm_json, parse_llm_json_or_partial
 from app.services import numbering, prompts
 
 # 노드 한 줄 직렬화 시 텍스트 외 고정 오버헤드 추정치 (id·좌표·유형 표기)
@@ -44,6 +44,12 @@ FILL_CHUNK_SIZE = 30
 # 의도 분류 휴리스틱 폴백 키워드 (fill을 edit보다 먼저 검사)
 _FILL_KEYWORDS = ("작성", "채워", "초안", "다시 작성", "재작성")
 _EDIT_KEYWORDS = ("수정", "바꿔", "변경", "고쳐")
+
+# LLM 응답이 max_tokens로 잘려 부분만 복구·반영했을 때의 사용자 안내
+_TRUNCATED_NOTE = (
+    "LLM 응답이 길이 제한으로 잘려 일부 항목만 반영되었습니다. "
+    "반영되지 않은 부분은 미리보기에서 범위를 좁혀 선택한 뒤 다시 요청해 주세요."
+)
 
 
 @dataclass
@@ -252,9 +258,11 @@ class Orchestrator:
             )
         rule = numbering.build_numbering_rule(numbering.detect_item_scheme(nodes))
         prompt = prompts.build_edit_prompt(message, nodes, numbering_rule=rule)
-        data = await self._chat_json_object(token, prompt, history)
+        data, truncated = await self._chat_json_object(token, prompt, history)
         valid_ids = {int(n["id"]) for n in nodes}
         edits, local_notes = self._extract_edits(data, valid_ids)
+        if truncated:
+            local_notes.append(_TRUNCATED_NOTE)
         reply = self._extract_reply(data, default=f"{len(edits)}개 항목을 수정했습니다.")
         return TurnResult(
             intent="edit",
@@ -315,7 +323,10 @@ class Orchestrator:
         # (청크에는 기호가 안 보여도 문서의 체계를 이어받게 한다)
         rule = numbering.build_numbering_rule(numbering.detect_item_scheme(nodes))
         merged: dict[int, str] = {}
-        for chunk in self._fill_chunks(targets, FILL_CHUNK_SIZE):
+        chunks = self._fill_chunks(targets, FILL_CHUNK_SIZE)
+        failed_chunks = 0
+        last_parse_err: LlmJsonParseError | None = None
+        for i, chunk in enumerate(chunks):
             chunk_ids = {int(n["id"]) for n in chunk}
             chunk_ph = [
                 p for p in placeholders
@@ -324,7 +335,21 @@ class Orchestrator:
             prompt = prompts.build_fill_prompt(
                 message, chunk, chunk_ph, numbering_rule=rule
             )
-            data = await self._chat_json_object(token, prompt, history)
+            try:
+                data, truncated = await self._chat_json_object(token, prompt, history)
+            except LlmJsonParseError as e:
+                # 청크 격리: 이 청크만 포기하고 나머지는 계속 (부분 성공 보존).
+                # 연결·타임아웃·인증 등 다른 LlmError는 즉시 전파(기존 계약).
+                failed_chunks += 1
+                last_parse_err = e
+                lo, hi = chunk[0]["id"], chunk[-1]["id"]
+                notes_all.append(
+                    f"{i + 1}번째 구간(노드 {lo}~{hi})의 응답을 해석하지 못해 "
+                    "채우지 못했습니다. 해당 부분은 다시 요청해 주세요."
+                )
+                continue
+            if truncated and _TRUNCATED_NOTE not in notes_all:
+                notes_all.append(_TRUNCATED_NOTE)
             edits, local_notes = self._extract_edits(data, chunk_ids)
             for e in edits:
                 merged[e["id"]] = e["new_text"]  # 중복 id는 마지막 승리
@@ -332,6 +357,10 @@ class Orchestrator:
             llm_notes = data.get("notes")
             if isinstance(llm_notes, str) and llm_notes.strip():
                 notes_all.append(llm_notes.strip())
+
+        if chunks and failed_chunks == len(chunks):
+            # 전 청크 실패 — 부분 성공이 전혀 없으므로 기존 예외 경로 유지
+            raise last_parse_err
 
         edits_out = [
             {"id": gid, "new_text": text} for gid, text in sorted(merged.items())
@@ -341,6 +370,8 @@ class Orchestrator:
             if edits_out
             else "채울 수 있는 항목을 찾지 못했습니다. 제공 내용을 확인해 주세요."
         )
+        if edits_out and failed_chunks:
+            reply += " (일부 구간은 채우지 못했습니다 — 참고 사항을 확인해 주세요.)"
         notes = "; ".join(notes_all) if notes_all else None
         return TurnResult(intent="fill", reply=reply, edits=edits_out, notes=notes)
 
@@ -356,25 +387,52 @@ class Orchestrator:
 
     async def _chat_json_object(
         self, token: str, prompt: str, history: list[dict]
-    ) -> dict:
-        """LLM 호출 → JSON 객체 파싱. 실패 시 1회 재요청, 재실패면 전파."""
+    ) -> tuple[dict, bool]:
+        """LLM 호출 → JSON 객체 파싱. 반환: (data, truncated 여부).
+
+        파싱 실패 시 잘림 복구(parse_llm_json_or_partial)를 먼저 시도한다 —
+        잘림의 원인은 대부분 max_tokens 상한이라 동일 프롬프트 재요청은
+        같은 지점에서 다시 잘릴 확률이 높기 때문. 복구분이 쓸 만하면
+        (완성 edit ≥ 1 또는 비어있지 않은 reply) 채택하고 재요청을 생략한다.
+        복구 불가 시에만 기존처럼 1회 재요청, 재실패면 LlmJsonParseError.
+        """
         raw = await self.backend.chat(prompt, history, token=token)
-        try:
-            data = parse_llm_json(raw)
-            if isinstance(data, dict):
-                return data
-        except LlmJsonParseError:
-            pass
+        result = self._parse_or_salvage(raw)
+        if result is not None:
+            return result
         # 1회 재요청 ("JSON만 출력" 경고를 앞세운 동일 프롬프트)
         raw = await self.backend.chat(
             prompts.build_retry_prompt(prompt), history, token=token
         )
-        data = parse_llm_json(raw)  # 재실패 시 LlmJsonParseError 전파
+        result = self._parse_or_salvage(raw)
+        if result is not None:
+            return result
+        snippet = (raw or "").strip()[:200]
+        raise LlmJsonParseError(f"LLM 응답을 JSON 객체로 복구하지 못했습니다: {snippet!r}")
+
+    @classmethod
+    def _parse_or_salvage(cls, raw: str) -> tuple[dict, bool] | None:
+        """응답을 (dict, truncated)로 해석한다. 채택 불가면 None(재요청 신호)."""
+        try:
+            data, truncated = parse_llm_json_or_partial(raw)
+        except LlmJsonParseError:
+            return None
         if not isinstance(data, dict):
-            raise LlmJsonParseError(
-                f"LLM 응답이 JSON 객체가 아닙니다: {type(data).__name__}"
-            )
-        return data
+            return None
+        if truncated and not cls._salvage_usable(data):
+            return None  # 살린 게 없으면 재요청이 낫다
+        return data, truncated
+
+    @staticmethod
+    def _salvage_usable(data: dict) -> bool:
+        """잘림 복구본이 쓸 만한가 — 완성 edit ≥ 1 또는 reply 텍스트 존재."""
+        edits = data.get("edits")
+        if isinstance(edits, list) and any(
+            isinstance(e, dict) and "id" in e and "new_text" in e for e in edits
+        ):
+            return True
+        reply = data.get("reply")
+        return isinstance(reply, str) and bool(reply.strip())
 
     @staticmethod
     def _extract_edits(

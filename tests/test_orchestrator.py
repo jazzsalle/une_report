@@ -324,3 +324,86 @@ def test_token_and_history_passed_to_every_call():
     for _query, history, opts in backend.calls:
         assert opts["token"] == TOKEN
         assert history == HISTORY
+
+
+# ── 7. 응답 잘림 내성: 부분 복구 + fill 청크 격리 ────────────────
+
+def test_edit_truncated_salvaged_without_retry():
+    """편집 응답이 max_tokens로 잘리면 완성 항목만 반영하고 재요청은 생략."""
+    backend = FakeBackend([
+        "깨진 병합 응답",          # 병합 실패 → 분리 폴백
+        '{"intent": "edit"}',      # 분리 분류
+        # 편집 응답: 둘째 항목 문자열 중간 절단
+        '{"reply": "수정했습니다", "edits": [{"id": 0, "new_text": "완성된 항목"}, '
+        '{"id": 1, "new_text": "여기서 잘',
+    ])
+    result = _turn(backend, message="바꿔줘", doc_nodes=_nodes(3))
+    assert result.intent == "edit"
+    assert result.edits == [{"id": 0, "new_text": "완성된 항목"}]
+    assert result.notes is not None and "잘려" in result.notes
+    assert len(backend.calls) == 3  # 잘림 복구 채택 → 재요청 없음
+
+
+def test_edit_salvage_empty_falls_back_to_retry():
+    """잘렸는데 살릴 게 없으면(첫 값 미완성) 기존 1회 재요청으로 폴백."""
+    backend = FakeBackend([
+        "깨진 병합 응답",
+        '{"intent": "edit"}',
+        '{"repl',                  # 살릴 값 없음 → 재요청
+        '{"reply": "재시도 성공", "edits": [{"id": 0, "new_text": "고침"}]}',
+    ])
+    result = _turn(backend, message="바꿔줘", doc_nodes=_nodes(2))
+    assert result.edits == [{"id": 0, "new_text": "고침"}]
+    assert len(backend.calls) == 4
+
+
+def test_fill_truncated_chunk_keeps_complete_edits():
+    """fill 청크 응답이 잘리면 완성 항목 반영 + 잘림 안내, 재요청 생략."""
+    backend = FakeBackend([
+        '{"intent": "fill", "reply": ""}',   # 병합: fill 위임
+        '{"reply": "채움", "edits": [{"id": 0, "new_text": "완성"}, '
+        '{"id": 1, "new_text": "잘',
+    ])
+    result = _turn(backend, message="이 양식을 작성해줘", doc_nodes=_nodes(4))
+    assert result.intent == "fill"
+    assert result.edits == [{"id": 0, "new_text": "완성"}]
+    assert result.notes is not None and "잘려" in result.notes
+    assert len(backend.calls) == 2
+
+
+def test_fill_chunk_failure_isolated_partial_success():
+    """2청크 중 하나만 파싱 불가 → 성공 청크 edits 보존 + 실패 구간 notes."""
+    backend = FakeBackend([
+        '{"intent": "fill", "reply": ""}',
+        '{"reply": "1", "edits": [{"id": 1, "new_text": "값1"}]}',  # 청크1 (0~29)
+        "완전히 깨진 응답",       # 청크2 1차
+        "재요청도 깨진 응답",     # 청크2 재요청 → 격리
+    ])
+    result = _turn(backend, message="이 양식을 작성해줘", doc_nodes=_nodes(60))
+    assert result.intent == "fill"
+    assert result.edits == [{"id": 1, "new_text": "값1"}]
+    assert result.notes is not None and "2번째 구간" in result.notes
+    assert "일부 구간은 채우지 못했습니다" in result.reply
+    assert len(backend.calls) == 4
+
+
+def test_fill_all_chunks_failed_raises():
+    """전 청크 파싱 실패면 부분 성공이 없으므로 기존 예외 경로 유지."""
+    backend = FakeBackend([
+        '{"intent": "fill", "reply": ""}',
+        "깨진1", "깨진2",    # 청크1: 1차+재요청 실패
+        "깨진3", "깨진4",    # 청크2: 1차+재요청 실패
+    ])
+    with pytest.raises(LlmJsonParseError):
+        _turn(backend, message="이 양식을 작성해줘", doc_nodes=_nodes(60))
+
+
+def test_fill_connection_error_not_isolated():
+    """연결 계열 오류(LlmUnavailableError)는 청크 격리 대상이 아니라 즉시 전파."""
+    backend = FakeBackend([
+        '{"intent": "fill", "reply": ""}',
+        '{"reply": "1", "edits": [{"id": 1, "new_text": "값1"}]}',
+        LlmUnavailableError("서버 다운"),
+    ])
+    with pytest.raises(LlmUnavailableError):
+        _turn(backend, message="이 양식을 작성해줘", doc_nodes=_nodes(60))
