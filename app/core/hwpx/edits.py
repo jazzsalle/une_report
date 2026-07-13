@@ -22,6 +22,15 @@ T2의 HTML 변환기가 data-id로 노출하는 값과 동일한 체계다.
   속성을 생략한다(한컴 기본 서식). 문단 서식은 기존 hp:p의
   paraPrIDRef가 그대로 유지된다.
 - hp:p조차 없는 컨테이너는 종전대로 skip한다.
+
+레이아웃 캐시(linesegarray) 무효화 — 문장 겹침 방지:
+- 한컴오피스는 문서를 열 때 문단의 hp:linesegarray(줄배치 캐시)를 재사용한다.
+  텍스트만 바꾸고 캐시를 남기면 옛 텍스트(줄 수) 기준 좌표에 긴 새 텍스트가
+  그려져 문장이 겹친다 (python-hwpx body_patch.py 실측 기록과 동일 증상,
+  ouputs/문장겹침_원인분석_개선안.md 참조).
+- 따라서 편집(교체·삽입)된 노드가 속한 hp:p의 linesegarray를 제거한다.
+  캐시가 없으면 한컴이 열 때 재계산하므로 정상 렌더링된다.
+- 편집하지 않은 문단의 캐시는 보존한다(불필요한 재계산 방지).
 """
 import re
 import shutil
@@ -103,6 +112,27 @@ def _set_node_text(node, new_text: str) -> None:
         t.text = new_text if i == 0 else ""
 
 
+def _nearest_p(elem: ET.Element, parent_map: dict[ET.Element, ET.Element]) -> ET.Element | None:
+    """elem에서 부모 방향으로 올라가며 가장 가까운 hp:p를 찾는다. 없으면 None."""
+    cur: ET.Element | None = elem
+    while cur is not None:
+        if tag(cur) == "p":
+            return cur
+        cur = parent_map.get(cur)
+    return None
+
+
+def _strip_lineseg_cache(p_elem: ET.Element) -> None:
+    """문단의 hp:linesegarray(한컴 줄배치 캐시)를 제거한다.
+
+    편집된 문단에 stale 캐시가 남으면 한컴이 옛 줄배치를 재사용해
+    문장이 겹쳐 렌더된다. 제거하면 열 때 재계산된다(모듈 docstring 참조).
+    """
+    for child in list(p_elem):
+        if tag(child) == "linesegarray":
+            p_elem.remove(child)
+
+
 def _find_first_p(elem: ET.Element) -> ET.Element | None:
     """컨테이너 안의 첫 hp:p를 찾는다(표 내부 제외). elem 자신이 p면 그대로."""
     if tag(elem) == "p":
@@ -117,12 +147,16 @@ def _find_first_p(elem: ET.Element) -> ET.Element | None:
 
 
 def _ensure_t_elem(
-    node: TextNode, t_ns: str, fallback_char_ref: str | None
+    node: TextNode,
+    t_ns: str,
+    fallback_char_ref: str | None,
+    parent_map: dict[ET.Element, ET.Element],
 ) -> ET.Element | None:
     """빈 노드(hp:t 없음)에 hp:t를 생성 삽입해 반환한다. 앵커가 없으면 None.
 
     모듈 docstring "빈 노드 채움 규칙" 참조. t_ns가 비어 있으면(문서 전체에
     hp:t가 0개) 표준 hp 네임스페이스로 생성한다.
+    삽입된 문단의 linesegarray는 제거한다(stale 캐시 → 문장 겹침 방지).
     """
     if node.elem is None:
         return None
@@ -131,9 +165,12 @@ def _ensure_t_elem(
     # 1) 기존 run이 있으면 그 안에 t 추가 (charPrIDRef 서식 그대로 적용)
     runs, _ts = collect_runs_and_texts(node.elem)
     if runs:
+        p = _nearest_p(runs[0], parent_map)
+        if p is not None:
+            _strip_lineseg_cache(p)
         return ET.SubElement(runs[0], f"{ns}t")
 
-    # 2) run이 없으면 첫 hp:p에 run+t 생성 (linesegarray 앞에 삽입)
+    # 2) run이 없으면 첫 hp:p에 run+t 생성
     p = _find_first_p(node.elem)
     if p is None:
         return None
@@ -146,6 +183,7 @@ def _ensure_t_elem(
             insert_at = i
             break
     p.insert(insert_at, run)
+    _strip_lineseg_cache(p)
     return ET.SubElement(run, f"{ns}t")
 
 
@@ -191,7 +229,7 @@ def apply_edits(
         remaining = dict(edit_map)
         global_offset = 0
         for sf in section_files:
-            nodes, tree, _parent_map, t_ns = parse_section(sf)
+            nodes, tree, parent_map, t_ns = parse_section(sf)
             fallback_char_ref = None  # 필요해질 때 1회만 탐색 (섹션 단위 캐시)
             changed = False
             for node in nodes:
@@ -206,11 +244,17 @@ def apply_edits(
                     # hp:t 없는 빈 노드(실양식 빈 셀) → hp:t 생성 삽입 후 채움
                     if fallback_char_ref is None:
                         fallback_char_ref = _first_char_pr_ref(tree.getroot()) or ""
-                    new_t = _ensure_t_elem(node, t_ns, fallback_char_ref)
+                    new_t = _ensure_t_elem(node, t_ns, fallback_char_ref, parent_map)
                     if new_t is None:
                         result.skipped_ids.append(gid)  # 삽입 앵커(hp:p) 없음
                         continue
                     node.t_elems = [new_t]
+                else:
+                    # 편집된 문단의 줄배치 캐시 제거 (stale → 문장 겹침)
+                    for t in node.t_elems:
+                        p = _nearest_p(t, parent_map)
+                        if p is not None:
+                            _strip_lineseg_cache(p)
                 _set_node_text(node, _flatten_newlines(new_text))
                 result.applied_ids.append(gid)
                 changed = True

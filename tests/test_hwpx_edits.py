@@ -1,4 +1,5 @@
-"""edits.py 테스트: id 정규화, apply_edits 왕복(적용·skip·불변성), 빈 노드 채움."""
+"""edits.py 테스트: id 정규화, apply_edits 왕복(적용·skip·불변성), 빈 노드 채움,
+편집 문단 linesegarray(줄배치 캐시) 무효화."""
 from pathlib import Path
 from xml.etree import ElementTree as ET
 
@@ -267,3 +268,115 @@ class TestEmptyNodeFill:
         assert result.skipped_ids == [gid]
         after = _global_nodes(out, tmp_path / "after")
         assert not after[gid].t_elems  # 여전히 hp:t 없음
+
+
+# ---------------------------------------------------------------------------
+# 편집 문단 linesegarray(한컴 줄배치 캐시) 무효화 — 문장 겹침 회귀 방지
+# (ouputs/문장겹침_원인분석_개선안.md: stale 캐시가 남으면 한컴이 옛 줄배치를
+#  재사용해 긴 새 텍스트가 겹쳐 렌더된다)
+# ---------------------------------------------------------------------------
+
+from app.core.hwpx.xml_utils import HWPX_NAMESPACES
+
+_HP = "{" + HWPX_NAMESPACES["hp"] + "}"
+
+
+def _inject_lineseg_caches(src: Path, work_dir: Path, out: Path) -> Path:
+    """모든 hp:p에 linesegarray를 주입해 '한컴이 저장한 템플릿'(캐시 보유)을 재현한다."""
+    extract_dir = work_dir / "lineseg_src"
+    compress_info, file_order = extract_hwpx(src, extract_dir)
+    sf = find_section_files(extract_dir)[0]
+    register_namespaces(sf)
+    tree = ET.parse(sf)
+    for p in [e for e in tree.getroot().iter() if tag(e) == "p"]:
+        arr = ET.SubElement(p, f"{_HP}linesegarray")
+        ET.SubElement(arr, f"{_HP}lineseg", {
+            "textpos": "0", "vertpos": "0", "vertsize": "1000",
+            "textheight": "1000", "baseline": "850", "spacing": "600",
+            "horzpos": "0", "horzsize": "42520", "flags": "393216",
+        })
+    tree.write(sf, xml_declaration=True, encoding="utf-8")
+    repack_hwpx(extract_dir, out, compress_info, file_order)
+    return out
+
+
+def _p_of_node(node, parent_map) -> ET.Element:
+    """노드의 첫 hp:t가 속한 문단(hp:p)을 부모 방향 탐색으로 찾는다."""
+    cur = node.t_elems[0]
+    while cur is not None and tag(cur) != "p":
+        cur = parent_map.get(cur)
+    assert cur is not None, "hp:t의 조상 중 hp:p가 있어야 한다"
+    return cur
+
+
+def _has_cache(p_elem: ET.Element) -> bool:
+    return any(tag(c) == "linesegarray" for c in p_elem)
+
+
+class TestLinesegCacheInvalidation:
+    @pytest.fixture
+    def cached_form_hwpx(self, demo_form_hwpx, tmp_path) -> Path:
+        return _inject_lineseg_caches(
+            demo_form_hwpx, tmp_path, tmp_path / "cached_form.hwpx"
+        )
+
+    def test_edited_paragraphs_cache_removed_others_kept(self, cached_form_hwpx, tmp_path):
+        """편집된 문단·셀의 linesegarray는 제거되고, 미편집 문단 것은 보존된다."""
+        before = _global_nodes(cached_form_hwpx, tmp_path / "before")
+        para_id = _find_gid(before, "[기관명]")       # body_text
+        cell_id = _find_gid(before, "TBD")            # table_cell
+        untouched_id = _find_gid(before, "본 문서는")  # 편집 안 함
+
+        out = tmp_path / "cache_edited.hwpx"
+        result = apply_edits(cached_form_hwpx, [
+            {"id": para_id, "new_text": "훨씬 길어진 새 본문 텍스트 — 여러 줄로 줄바꿈될 만큼 충분히 긴 문장을 넣는다."},
+            {"id": cell_id, "new_text": "새 셀 값"},
+        ], out)
+        assert sorted(result.applied_ids) == sorted([para_id, cell_id])
+        assert validate_hwpx(out).ok
+
+        extract_dir = tmp_path / "verify_cache"
+        extract_hwpx(out, extract_dir)
+        sf = find_section_files(extract_dir)[0]
+        nodes, _tree, parent_map, _ns = parse_section(sf)
+        by_id = {n.id: n for n in nodes}
+
+        assert not _has_cache(_p_of_node(by_id[para_id], parent_map)), \
+            "편집된 문단의 stale linesegarray가 제거돼야 한다 (문장 겹침 원인)"
+        assert not _has_cache(_p_of_node(by_id[cell_id], parent_map)), \
+            "편집된 표 셀 문단의 stale linesegarray가 제거돼야 한다"
+        assert _has_cache(_p_of_node(by_id[untouched_id], parent_map)), \
+            "편집하지 않은 문단의 캐시는 보존돼야 한다"
+
+    def test_empty_cell_fill_removes_cache(self, demo_form_hwpx, tmp_path):
+        """빈 노드 채움(hp:t 생성 삽입) 경로도 해당 문단 캐시를 제거한다."""
+        empty = _make_hancom_style_empty_cells(
+            demo_form_hwpx, tmp_path, tmp_path / "empty.hwpx"
+        )
+        cached = _inject_lineseg_caches(empty, tmp_path / "inj", tmp_path / "cached_empty.hwpx")
+
+        before = _global_nodes(cached, tmp_path / "before")
+        empty_gids = [
+            gid for gid in sorted(before)
+            if before[gid].type == "table_cell" and not before[gid].t_elems
+        ]
+        assert len(empty_gids) >= 2
+        run_only, no_run = empty_gids[0], empty_gids[1]
+
+        out = tmp_path / "cache_filled.hwpx"
+        result = apply_edits(cached, [
+            {"id": run_only, "new_text": "기존 run에 채움"},
+            {"id": no_run, "new_text": "생성 run에 채움"},
+        ], out)
+        assert sorted(result.applied_ids) == sorted([run_only, no_run])
+        assert validate_hwpx(out).ok
+
+        extract_dir = tmp_path / "verify_fill_cache"
+        extract_hwpx(out, extract_dir)
+        sf = find_section_files(extract_dir)[0]
+        nodes, _tree, parent_map, _ns = parse_section(sf)
+        by_id = {n.id: n for n in nodes}
+        for gid in (run_only, no_run):
+            assert by_id[gid].t_elems, "hp:t가 생성돼 있어야 한다"
+            assert not _has_cache(_p_of_node(by_id[gid], parent_map)), \
+                f"id={gid}: 채워진 문단의 linesegarray가 제거돼야 한다"

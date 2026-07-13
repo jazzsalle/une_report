@@ -40,6 +40,14 @@ Phase 1~7은 이전 세션에서 완료(커밋 이력 참조). 현재는 **개�
   - `FILL_NODE_LIMIT`(기본 300) 안전판: 초과 시 표식·가이드 중심 축소(+notes), 표식 없으면 앞쪽 상한만
   - 실서버 재현 검증: 같은 템플릿+호우 매뉴얼 내용 → 종전 1개 → **31개 생성·25개 적용**, 스텁 전부 소거
 - 테스트: 146 → **194 passed** (pytest, integration 2 deselected)
+- **문장 겹침 버그 수정** (2026-07-13, `ouputs/문장겹침_원인분석_개선안.md`):
+  - 원인: `apply_edits`가 텍스트만 교체하고 편집 문단의 `hp:linesegarray`(한컴 줄배치 캐시)를
+    남겨둠 → 한컴이 옛 텍스트(1줄) 기준 배치를 재사용해 긴 새 텍스트가 겹쳐 렌더
+    (`ouputs/응답결과.hwpx` 실측: 스텁 템플릿 캐시 33개 전부 잔존)
+  - 수정: `edits.py` — 편집(교체·빈 셀 삽입)된 노드의 소속 hp:p마다 linesegarray 제거,
+    미편집 문단 캐시는 보존. parse_section의 parent_map 활용 (자체 구현, 오픈소스 미복사)
+  - 테스트 2건 추가(캐시 주입 후 제거·보존 검증) → **196 passed**
+  - 기존 산출물 복구본: `ouputs/응답결과_겹침수정.hwpx` (전 문단 캐시 제거, validate 통과) — 한컴 육안 확인 대기
 - 실측 프로브 이력: scratchpad에서 수행(저장소 외). UNI RAG passthrough — max_tokens/max_new_tokens 모두 200 수용(효과는 미검증)
 
 ## In progress
@@ -56,7 +64,7 @@ Phase 1~7은 이전 세션에서 완료(커밋 이력 참조). 현재는 **개�
 - 없음. (UNI 담당자 협의 불가 상태 — guided_json 등 서버 측 개선은 보류, 전부 클라이언트 측으로 우회 중)
 
 ## 로컬 전용 파일 (커밋 안 됨 — 회사 PC에는 없음)
-- `개발 배경 및 목적.txt`(실계정 포함, gitignore), `.env`(테스트 계정), `seed_base.hwpx`, `실양식2.hwpx`(루트), `ouputs/실양식*.hwpx`(루트 사본)
+- `개발 배경 및 목적.txt`(gitignore, 실계정 미포함 — 사용자 확인), `.env`(테스트 계정), `seed_base.hwpx`, `실양식2.hwpx`(루트), `ouputs/실양식*.hwpx`(루트 사본)
 - 커밋된 실측 픽스처: `ouputs/[서식1] 사업계획서(신청용).hwpx`(회귀 테스트가 사용, 없으면 skip), `ouputs/오류사항 화면캡쳐.png`, `개선 검토 사항.txt`
 
 ## How to run
