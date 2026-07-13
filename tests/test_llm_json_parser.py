@@ -137,3 +137,90 @@ def test_unbalanced_braces_raises():
 def test_error_message_contains_snippet():
     with pytest.raises(LlmJsonParseError, match="복구하지 못했습니다"):
         parse_llm_json("완전히 JSON이 아닌 텍스트")
+
+
+# ── 잘림 복구 (parse_llm_json_or_partial) ──────────────────────
+
+from app.llm.json_parser import parse_llm_json_or_partial  # noqa: E402
+
+
+def test_partial_complete_json_not_truncated():
+    obj, truncated = parse_llm_json_or_partial(EDITS_JSON)
+    assert obj == EDITS_OBJ
+    assert truncated is False
+
+
+def test_partial_truncated_mid_string_keeps_complete_items():
+    """마지막 항목 문자열 중간 절단 → 완성된 앞 항목만 복구."""
+    text = (
+        '{"reply": "수정했습니다", "edits": ['
+        '{"id": 1, "new_text": "첫 항목 완성"}, '
+        '{"id": 2, "new_text": "둘째 항목이 여기서 잘'
+    )
+    obj, truncated = parse_llm_json_or_partial(text)
+    assert truncated is True
+    assert obj["reply"] == "수정했습니다"
+    assert obj["edits"] == [{"id": 1, "new_text": "첫 항목 완성"}]
+
+
+def test_partial_truncated_right_after_edits_open():
+    """reply만 완결되고 edits가 열리다 만 경우 → edits:[] 복구."""
+    text = '{"reply": "작업 결과 요약입니다", "edits": [{"id": 5, "new_'
+    obj, truncated = parse_llm_json_or_partial(text)
+    assert truncated is True
+    assert obj == {"reply": "작업 결과 요약입니다", "edits": []}
+
+
+def test_partial_first_value_incomplete_raises():
+    """첫 값조차 미완성이면 살릴 게 없어 예외."""
+    with pytest.raises(LlmJsonParseError):
+        parse_llm_json_or_partial('{"repl')
+
+
+def test_partial_truncated_inside_code_fence():
+    """닫는 펜스 없이 잘린 코드펜스 응답도 복구된다."""
+    text = '```json\n{"reply": "완료", "edits": [{"id": 3, "new_text": "값"}, {"id": 4'
+    obj, truncated = parse_llm_json_or_partial(text)
+    assert truncated is True
+    assert obj["edits"] == [{"id": 3, "new_text": "값"}]
+
+
+def test_partial_truncated_after_think_block():
+    text = '<think>생각 중...</think>{"reply": "네", "edits": [{"id": 1, "new_text": "완성"},'
+    obj, truncated = parse_llm_json_or_partial(text)
+    assert truncated is True
+    assert obj["edits"] == [{"id": 1, "new_text": "완성"}]
+
+
+def test_partial_escaped_quote_boundary():
+    """이스케이프(\\")가 있는 문자열 뒤 절단 — 완결 값으로 정확히 인식."""
+    text = '{"edits": [{"id": 1, "new_text": "따옴표 \\" 포함 값"}, {"id": 2, "new_text": "잘'
+    obj, truncated = parse_llm_json_or_partial(text)
+    assert truncated is True
+    assert obj["edits"][0]["new_text"] == '따옴표 " 포함 값'
+    assert len(obj["edits"]) == 1
+
+
+def test_partial_number_value_and_nested_array():
+    """숫자 값 완결·중첩 배열 경계의 안전 지점."""
+    text = '{"a": [1, 2, [3, 4]], "b": 12'
+    obj, truncated = parse_llm_json_or_partial(text)
+    assert truncated is True
+    assert obj == {"a": [1, 2, [3, 4]]}  # 미완성일 수 있는 꼬리 숫자는 버림
+
+
+def test_partial_key_only_not_adopted():
+    """키 문자열 직후는 안전 지점이 아니다 — {"a":1,"b" 는 {"a":1}로."""
+    obj, truncated = parse_llm_json_or_partial('{"a": 1, "b"')
+    assert truncated is True
+    assert obj == {"a": 1}
+
+
+def test_partial_prose_still_raises():
+    with pytest.raises(LlmJsonParseError):
+        parse_llm_json_or_partial("죄송하지만 처리할 수 없습니다.")
+
+
+def test_partial_none_raises():
+    with pytest.raises(LlmJsonParseError):
+        parse_llm_json_or_partial(None)  # type: ignore[arg-type]

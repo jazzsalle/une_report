@@ -162,6 +162,138 @@ def _remove_trailing_commas(text: str) -> str:
     return "".join(out)
 
 
+def _complete_truncated(text: str) -> str | None:
+    """잘린 JSON을 '마지막 안전 지점'까지 잘라 닫는 괄호를 붙여 완성한다.
+
+    max_tokens 상한으로 응답이 중간에 끊긴 경우의 부분 복구용.
+    _extract_balanced와 같은 상태기계(문자열 리터럴·이스케이프 인식)로
+    스캔하며 아래 세 곳만 '안전 지점'으로 기록한다:
+
+    1. 원문에 **명시적으로 닫힌** 하위 트리(`}`/`]`) 직후 — 진짜 완결된 값
+    2. `[`가 막 열린 직후 — 빈 배열로 닫아도 항목을 날조하지 않음
+    3. 최상위 컨테이너(depth 1)의 스칼라 값 완결 직후 — reply 등 헤더 필드
+
+    쓰다 만 중첩 객체를 조기에 닫아 부분 항목({"id":2}처럼 new_text 없는
+    edit)을 날조하는 것을 막기 위해, 깊은 곳의 스칼라 완결·`{` 직후는
+    안전 지점으로 삼지 않는다. 키 문자열·콜론·미완성 토큰도 마찬가지.
+
+    EOF에서 괄호 짝이 안 맞으면 마지막 안전 지점에서 자르고 그 시점의
+    열린 괄호를 역순으로 닫아 반환한다. 안전 지점이 없거나 원문이
+    균형이면(잘림 아님) None.
+    """
+    starts = [i for i in (text.find("{"), text.find("[")) if i != -1]
+    if not starts:
+        return None
+    start = min(starts)
+
+    # 스택 원소: ["{", 상태] — 객체 상태: key→colon→value→post, 배열: value→post
+    stack: list[list[str]] = []
+    in_string = False
+    escape = False
+    string_is_value = False
+    in_token = False  # 숫자·true/false/null 토큰 스캔 중
+    last_safe: tuple[int, list[str]] | None = None  # (포함 끝 인덱스, 괄호 스냅샷)
+
+    def _mark_safe(i: int) -> None:
+        nonlocal last_safe
+        last_safe = (i, [entry[0] for entry in stack])
+
+    def _end_token(i_prev: int) -> None:
+        """토큰이 i_prev에서 끝났다 — 최상위 스칼라만 안전 지점(규칙 3)."""
+        nonlocal in_token
+        in_token = False
+        if stack:
+            stack[-1][1] = "post"
+            if len(stack) == 1:
+                _mark_safe(i_prev)
+
+    i = start
+    n = len(text)
+    while i < n:
+        ch = text[i]
+        if in_string:
+            if escape:
+                escape = False
+            elif ch == "\\":
+                escape = True
+            elif ch == '"':
+                in_string = False
+                if stack and string_is_value:
+                    stack[-1][1] = "post"
+                    if len(stack) == 1:
+                        _mark_safe(i)  # 규칙 3: 최상위 스칼라 완결
+                elif stack and stack[-1][0] == "{" and stack[-1][1] == "key":
+                    stack[-1][1] = "colon"
+            i += 1
+            continue
+        if in_token and (ch in ",}]" or ch in " \t\r\n"):
+            _end_token(i - 1)
+            continue  # 같은 문자를 아래 로직으로 재처리
+        if ch == '"':
+            in_string = True
+            string_is_value = not (stack and stack[-1][0] == "{" and stack[-1][1] == "key")
+        elif ch == "{" or ch == "[":
+            stack.append([ch, "key" if ch == "{" else "value"])
+            if ch == "[":
+                _mark_safe(i)  # 규칙 2: 빈 배열로 닫아도 항목 날조 없음
+        elif ch == "}" or ch == "]":
+            if not stack or (stack[-1][0], ch) not in (("{", "}"), ("[", "]")):
+                return None  # 구조 자체가 깨짐 — 잘림 복구 범위 밖
+            stack.pop()
+            if not stack:
+                return None  # 균형 도달 = 잘린 게 아님 (다른 원인)
+            stack[-1][1] = "post"
+            _mark_safe(i)  # 규칙 1: 명시적으로 닫힌 하위 트리
+        elif ch == ":":
+            if stack and stack[-1][0] == "{" and stack[-1][1] == "colon":
+                stack[-1][1] = "value"
+        elif ch == ",":
+            if stack:
+                stack[-1][1] = "key" if stack[-1][0] == "{" else "value"
+        elif ch not in " \t\r\n":
+            # 숫자·true/false/null 토큰 시작 (값 자리 여부는 관대하게 취급)
+            in_token = True
+        i += 1
+
+    # EOF에서 끊긴 토큰("12…")은 완결 보장이 없으므로 채택하지 않는다
+    # (last_safe는 그 토큰 이전 안전 지점을 가리킨다)
+    if not stack or last_safe is None:
+        return None
+    cut, snapshot = last_safe
+    closers = "".join("}" if b == "{" else "]" for b in reversed(snapshot))
+    return text[start:cut + 1] + closers
+
+
+def parse_llm_json_or_partial(text: str) -> tuple[Any, bool]:
+    """(파싱 결과, truncated 여부)를 반환한다.
+
+    완성 JSON이면 (obj, False). parse_llm_json이 실패하면 정리본
+    (<think>·펜스 제거)에 잘림 복구(_complete_truncated)를 시도하고,
+    성공 시 (obj, True) — 호출부는 truncated=True일 때 "응답이 잘려
+    일부만 반영" 안내를 덧붙여야 한다. 복구도 실패하면 LlmJsonParseError.
+    """
+    try:
+        return parse_llm_json(text), False
+    except LlmJsonParseError:
+        pass
+    repaired = None
+    if isinstance(text, str):
+        cleaned = _strip_code_fences(_strip_think_blocks(text)).strip()
+        repaired = _complete_truncated(cleaned)
+    if repaired is not None:
+        try:
+            return json.loads(repaired), True
+        except json.JSONDecodeError:
+            # 잘림 + 작은따옴표 등 복합 훼손 — 기존 보정기를 한 번 더
+            fixed = _remove_trailing_commas(_fix_single_quotes(repaired))
+            try:
+                return json.loads(fixed), True
+            except json.JSONDecodeError:
+                pass
+    snippet = (text or "").strip()[:200]
+    raise LlmJsonParseError(f"LLM 응답을 JSON으로 복구하지 못했습니다(잘림 복구 포함): {snippet!r}")
+
+
 def parse_llm_json(text: str) -> Any:
     """LLM 응답 텍스트에서 JSON을 복구·파싱해 반환한다.
 
