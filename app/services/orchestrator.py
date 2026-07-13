@@ -30,6 +30,7 @@ from app import config
 from app.core.hwpx.edits import normalize_edit_id
 from app.llm.base import LLMBackend, LlmJsonParseError
 from app.llm.json_parser import parse_llm_json, parse_llm_json_or_partial
+from app.llm.jsonl_stream import JsonlTurn, collect_jsonl_turn
 from app.services import numbering, prompts
 
 # 노드 한 줄 직렬화 시 텍스트 외 고정 오버헤드 추정치 (id·좌표·유형 표기)
@@ -44,6 +45,11 @@ FILL_CHUNK_SIZE = 30
 # 의도 분류 휴리스틱 폴백 키워드 (fill을 edit보다 먼저 검사)
 _FILL_KEYWORDS = ("작성", "채워", "초안", "다시 작성", "재작성")
 _EDIT_KEYWORDS = ("수정", "바꿔", "변경", "고쳐")
+
+async def _single_delta(raw: str):
+    """텍스트 하나를 1회 yield하는 async 이터레이터 (비스트림 응답의 JSONL 해석용)."""
+    yield raw
+
 
 # LLM 응답이 max_tokens로 잘려 부분만 복구·반영했을 때의 사용자 안내
 _TRUNCATED_NOTE = (
@@ -184,12 +190,12 @@ class Orchestrator:
         prompt = prompts.build_turn_prompt(
             message, prompt_nodes, prompt_placeholders, numbering_rule=rule
         )
-        raw = await self.backend.chat(prompt, history, token=token)
         try:
-            data = parse_llm_json(raw)
+            # 병합 경로는 재요청 없이 1회만 (실패해도 분리 경로가 재시도한다)
+            data, truncated = await self._chat_turn_stream(
+                token, prompt, history, retry=False
+            )
         except LlmJsonParseError:
-            return None
-        if not isinstance(data, dict):
             return None
         intent = str(data.get("intent", "")).strip().lower()
         if intent not in INTENTS:
@@ -200,8 +206,13 @@ class Orchestrator:
             reply = self._extract_reply(data, default="")
             if not reply:
                 return None  # 답변 없는 query는 분리 경로에서 재시도
-            return TurnResult(intent="query", reply=reply, edits=[])
+            return TurnResult(
+                intent="query", reply=reply, edits=[],
+                notes=_TRUNCATED_NOTE if truncated else None,
+            )
         edits, local_notes = self._extract_edits(data, node_ids)
+        if truncated:
+            local_notes.append(_TRUNCATED_NOTE)
         reply = self._extract_reply(data, default=f"{len(edits)}개 항목을 수정했습니다.")
         return TurnResult(
             intent="edit",
@@ -258,7 +269,7 @@ class Orchestrator:
             )
         rule = numbering.build_numbering_rule(numbering.detect_item_scheme(nodes))
         prompt = prompts.build_edit_prompt(message, nodes, numbering_rule=rule)
-        data, truncated = await self._chat_json_object(token, prompt, history)
+        data, truncated = await self._chat_turn_stream(token, prompt, history)
         valid_ids = {int(n["id"]) for n in nodes}
         edits, local_notes = self._extract_edits(data, valid_ids)
         if truncated:
@@ -336,7 +347,7 @@ class Orchestrator:
                 message, chunk, chunk_ph, numbering_rule=rule
             )
             try:
-                data, truncated = await self._chat_json_object(token, prompt, history)
+                data, truncated = await self._chat_turn_stream(token, prompt, history)
             except LlmJsonParseError as e:
                 # 청크 격리: 이 청크만 포기하고 나머지는 계속 (부분 성공 보존).
                 # 연결·타임아웃·인증 등 다른 LlmError는 즉시 전파(기존 계약).
@@ -385,30 +396,72 @@ class Orchestrator:
 
     # ── 내부 헬퍼 ──────────────────────────────────────────────
 
-    async def _chat_json_object(
-        self, token: str, prompt: str, history: list[dict]
+    async def _chat_turn_stream(
+        self, token: str, prompt: str, history: list[dict], *, retry: bool = True
     ) -> tuple[dict, bool]:
-        """LLM 호출 → JSON 객체 파싱. 반환: (data, truncated 여부).
+        """LLM 호출 → 응답 해석. 반환: (data dict, truncated 여부).
 
-        파싱 실패 시 잘림 복구(parse_llm_json_or_partial)를 먼저 시도한다 —
-        잘림의 원인은 대부분 max_tokens 상한이라 동일 프롬프트 재요청은
-        같은 지점에서 다시 잘릴 확률이 높기 때문. 복구분이 쓸 만하면
-        (완성 edit ≥ 1 또는 비어있지 않은 reply) 채택하고 재요청을 생략한다.
-        복구 불가 시에만 기존처럼 1회 재요청, 재실패면 LlmJsonParseError.
+        해석 사다리 (응답 잘림 내성):
+        1. backend.chat_stream()으로 JSONL 수신 — 완성된 줄까지는 잘려도 산다.
+           chat_stream 미구현 백엔드(NotImplementedError)는 chat() 폴백.
+        2. JSONL 줄이 하나도 안 잡히면(계약 위반: 통 JSON·산문) 수신 전문을
+           기존 parse_llm_json 사다리로 해석, 실패 시 잘림 부분 복구.
+           (잘림의 원인은 대부분 max_tokens라 재요청보다 복구가 우선 —
+            복구분이 쓸 만하면 재요청 생략)
+        3. 그래도 못 살리면 retry=True일 때 JSONL 경고 접두로 1회 재요청 후
+           같은 사다리 재적용. 최종 실패는 LlmJsonParseError.
+
+        연결·타임아웃·인증 오류(LlmError 비-파싱 계열)는 그대로 전파한다.
         """
-        raw = await self.backend.chat(prompt, history, token=token)
-        result = self._parse_or_salvage(raw)
+        result = await self._request_turn(token, prompt, history)
+        if result is None and retry:
+            raw = await self.backend.chat(
+                prompts.build_retry_prompt_jsonl(prompt), history, token=token
+            )
+            result = await self._interpret_response(raw)
         if result is not None:
             return result
-        # 1회 재요청 ("JSON만 출력" 경고를 앞세운 동일 프롬프트)
-        raw = await self.backend.chat(
-            prompts.build_retry_prompt(prompt), history, token=token
-        )
-        result = self._parse_or_salvage(raw)
-        if result is not None:
-            return result
-        snippet = (raw or "").strip()[:200]
-        raise LlmJsonParseError(f"LLM 응답을 JSON 객체로 복구하지 못했습니다: {snippet!r}")
+        raise LlmJsonParseError("LLM 응답을 해석하지 못했습니다 (JSONL·JSON·잘림 복구 모두 실패)")
+
+    async def _request_turn(
+        self, token: str, prompt: str, history: list[dict]
+    ) -> tuple[dict, bool] | None:
+        """1차 요청: 스트리밍 JSONL 우선, 미구현 백엔드는 비스트림 폴백."""
+        try:
+            stream = self.backend.chat_stream(prompt, history, token=token)
+            turn = await collect_jsonl_turn(stream)
+        except NotImplementedError:
+            raw = await self.backend.chat(prompt, history, token=token)
+            return await self._interpret_response(raw)
+        if turn.parsed_lines > 0:
+            data = self._shape_turn(turn)
+            if not turn.truncated or self._salvage_usable(data):
+                return data, turn.truncated
+            return None  # 잘렸는데 살린 게 없음 → 재요청이 낫다
+        # JSONL 계약 위반 응답 — 수신 전문을 통 JSON 사다리로
+        return self._parse_or_salvage(turn.raw)
+
+    async def _interpret_response(self, raw: str) -> tuple[dict, bool] | None:
+        """비스트림 텍스트 응답을 JSONL 우선 → 통 JSON/잘림 복구 순으로 해석."""
+        turn = await collect_jsonl_turn(_single_delta(raw))
+        if turn.parsed_lines > 0:
+            data = self._shape_turn(turn)
+            if not turn.truncated or self._salvage_usable(data):
+                return data, turn.truncated
+            return None
+        return self._parse_or_salvage(raw)
+
+    @staticmethod
+    def _shape_turn(turn: JsonlTurn) -> dict:
+        """JsonlTurn을 기존 응답 dict 모양으로 변환한다 (None 필드는 제외 —
+        intent=None이 str(None)="none"으로 새는 사고 방지)."""
+        data = {
+            "intent": turn.intent,
+            "reply": turn.reply,
+            "edits": turn.edits,
+            "notes": turn.notes,
+        }
+        return {k: v for k, v in data.items() if v is not None}
 
     @classmethod
     def _parse_or_salvage(cls, raw: str) -> tuple[dict, bool] | None:

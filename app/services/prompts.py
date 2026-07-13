@@ -10,31 +10,49 @@
 
 INTENT_JSON_EXAMPLE = '{"intent": "edit"}'
 
-# LLM 편집 응답 계약 (DESIGN.md M4-2): reply/edits/notes
+# ── JSONL(JSON Lines) 출력 계약 — 응답 잘림 내성 ────────────────
+# 한 줄에 완결된 JSON 객체 하나씩 출력하게 해, max_tokens로 응답이 중간에
+# 잘려도 완성된 줄까지는 반영할 수 있다 (수신: app/llm/jsonl_stream.py).
+# LLM이 계약을 어기고 통 JSON 하나를 내도 수집기·폴백 파서가 호환 처리한다.
+
+JSONL_OUTPUT_RULES = (
+    "출력 형식 (JSON Lines — 한 줄에 완결된 JSON 객체 하나씩):\n"
+    '1) 첫 줄(헤더): {"reply": "작업 결과를 요약한 한 문장"} — 의도 분류가 '
+    '요구된 경우 "intent"를 같은 줄에 포함하라.\n'
+    '2) 다음 줄부터: 수정 항목 하나당 한 줄 — {"id": 노드id, "new_text": "새 텍스트"}\n'
+    '3) 마지막 줄: {"notes": "확인이 필요한 항목 (없으면 빈 문자열)"}\n'
+    "- 각 줄은 그 자체로 유효한 JSON 객체여야 한다. 하나의 JSON을 여러 줄에 "
+    "걸쳐 쓰지 마라.\n"
+    "- new_text 안의 줄바꿈은 \\n 으로 이스케이프하라.\n"
+    "- 코드펜스(```)·설명·사고 과정 등 JSON 줄 이외의 텍스트를 출력하지 마라.\n"
+)
+
 # NOTE: LLM은 예시의 분량을 강하게 모방하므로 new_text 예시는 실제 기대
 # 분량 수준(완결된 공문서 문장)으로 유지한다 — 짧은 예시는 짧은 출력을 유발.
-EDIT_JSON_EXAMPLE = (
-    '{"reply": "요청하신 항목을 수정했습니다.", '
-    '"edits": [{"id": 12, "new_text": "본 계획은 재난 발생 시 신속한 초동 대응과 '
-    '피해 최소화를 목적으로 하며, 관계 기관과의 협조 체계를 포함한다."}], '
-    '"notes": "적용하지 못한 항목이 있으면 그 사유 (없으면 생략)"}'
+EDIT_JSONL_EXAMPLE = (
+    '{"reply": "요청하신 항목을 수정했습니다."}\n'
+    '{"id": 12, "new_text": "본 계획은 재난 발생 시 신속한 초동 대응과 '
+    '피해 최소화를 목적으로 하며, 관계 기관과의 협조 체계를 포함한다."}\n'
+    '{"notes": ""}'
 )
 
-# 분류+응답 병합 계약 (M4 개선): intent를 포함해 한 번에 받는다.
-# intent=fill이면 edits는 무시되고 별도 채움 파이프라인이 실행된다.
-TURN_JSON_EXAMPLE = (
-    '{"intent": "edit", '
-    '"reply": "요청하신 항목을 수정했습니다.", '
-    '"edits": [{"id": 12, "new_text": "본 계획은 재난 발생 시 신속한 초동 대응과 '
-    '피해 최소화를 목적으로 하며, 관계 기관과의 협조 체계를 포함한다."}], '
-    '"notes": "적용하지 못한 항목이 있으면 그 사유 (없으면 생략)"}'
+# 병합 경로(intent 포함): 첫 줄 헤더에 intent. fill·query면 edit 줄 없이 종료.
+TURN_JSONL_EXAMPLE = (
+    '{"intent": "edit", "reply": "요청하신 항목을 수정했습니다."}\n'
+    '{"id": 12, "new_text": "본 계획은 재난 발생 시 신속한 초동 대응과 '
+    '피해 최소화를 목적으로 하며, 관계 기관과의 협조 체계를 포함한다."}\n'
+    '{"notes": ""}'
 )
 
-# JSON 파싱 실패 시 1회 재요청에 앞세우는 경고문
-RETRY_PREFIX = (
-    "직전 응답을 JSON으로 파싱하지 못했다. 이번에는 코드펜스·설명·사고 과정 없이 "
-    "유효한 JSON 객체 하나만 출력하라.\n\n"
+RETRY_PREFIX_JSONL = (
+    "직전 응답을 해석하지 못했다. 이번에는 코드펜스·설명·사고 과정 없이, "
+    "아래 형식대로 한 줄에 JSON 객체 하나씩만 출력하라.\n\n"
 )
+
+
+def build_retry_prompt_jsonl(original_prompt: str) -> str:
+    """해석 실패 후 1회 재요청용 (JSONL 계약 경고 접두)."""
+    return RETRY_PREFIX_JSONL + original_prompt
 
 
 # ── 공통 포매터 ─────────────────────────────────────────────────
@@ -145,8 +163,7 @@ def build_turn_prompt(
         "- id는 위 목록에 있는 값만 그대로 사용하라 (새 id를 만들지 마라).\n"
         "- new_text는 해당 노드의 전체 텍스트를 대체할 완성된 문장으로 써라.\n"
         f"{numbering_rule + chr(10) if numbering_rule else ''}"
-        "- 다른 설명 없이 아래 형식의 JSON 객체 하나만 출력하라.\n\n"
-        f"{TURN_JSON_EXAMPLE}"
+        f"\n{JSONL_OUTPUT_RULES}\n예시 출력:\n{TURN_JSONL_EXAMPLE}"
     )
 
 
@@ -167,8 +184,7 @@ def build_edit_prompt(
         "- id는 위 목록에 있는 값만 그대로 사용하라 (새 id를 만들지 마라).\n"
         "- new_text는 해당 노드의 전체 텍스트를 대체할 완성된 문장으로 써라.\n"
         f"{numbering_rule + chr(10) if numbering_rule else ''}"
-        "- 다른 설명 없이 아래 형식의 JSON 객체 하나만 출력하라.\n\n"
-        f"{EDIT_JSON_EXAMPLE}"
+        f"\n{JSONL_OUTPUT_RULES}\n예시 출력:\n{EDIT_JSONL_EXAMPLE}"
     )
 
 
@@ -218,13 +234,5 @@ def build_fill_prompt(
         "맞는 값)으로 간결하게 작성하라. 한두 구절로 얼버무리지 마라.\n"
         "- 사용자 내용만으로 알 수 없는 값은 문맥상 자연스러운 초안으로 채우고 "
         "notes에 확인 필요 항목으로 적어라.\n"
-        "- 다른 설명 없이 아래 형식의 JSON 객체 하나만 출력하라.\n\n"
-        f"{EDIT_JSON_EXAMPLE}"
+        f"\n{JSONL_OUTPUT_RULES}\n예시 출력:\n{EDIT_JSONL_EXAMPLE}"
     )
-
-
-# ── JSON 재요청 (M3-4 연계) ────────────────────────────────────
-
-def build_retry_prompt(original_prompt: str) -> str:
-    """JSON 파싱 실패 후 1회 재요청용 프롬프트 (원 프롬프트에 경고 접두)."""
-    return RETRY_PREFIX + original_prompt

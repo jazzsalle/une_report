@@ -407,3 +407,102 @@ def test_fill_connection_error_not_isolated():
     ])
     with pytest.raises(LlmUnavailableError):
         _turn(backend, message="이 양식을 작성해줘", doc_nodes=_nodes(60))
+
+
+# ── 8. JSONL 스트리밍 수신 사다리 (chat_stream 연동) ─────────────
+
+class StreamFakeBackend(FakeBackend):
+    """chat_stream이 준비된 델타 목록을 yield하는 백엔드.
+
+    responses 원소: list[str] → chat_stream 델타 / str → chat 응답 /
+    Exception → 해당 호출에서 raise. 두 메서드가 같은 큐를 순서대로 소비한다.
+    """
+
+    async def chat_stream(self, query, history=None, **opts):
+        self.calls.append((query, history, opts))
+        item = self.responses.pop(0)
+        if isinstance(item, Exception):
+            raise item
+        assert isinstance(item, list), "chat_stream 응답은 델타 리스트여야 한다"
+        for delta in item:
+            yield delta
+
+
+def test_stream_jsonl_combined_edit_turn():
+    """스트리밍 JSONL(intent 헤더 + edit 줄들)로 edit 턴이 1회 종결된다."""
+    backend = StreamFakeBackend([
+        ['{"intent": "edit", "reply": "수정했습니다"}\n',
+         '{"id": 1, "new_', 'text": "새 값"}\n',   # 델타가 줄 경계와 무관해도 OK
+         '{"notes": ""}'],
+    ])
+    result = _turn(backend, message="바꿔줘", doc_nodes=_nodes(3))
+    assert result.intent == "edit"
+    assert result.reply == "수정했습니다"
+    assert result.edits == [{"id": 1, "new_text": "새 값"}]
+    assert len(backend.calls) == 1
+
+
+def test_stream_truncated_keeps_complete_lines_no_retry():
+    """스트림이 중간에 잘려도 완성된 줄까지 반영 + 잘림 안내, 재요청 없음."""
+    backend = StreamFakeBackend([
+        ['{"intent": "edit", "reply": "수정"}\n'
+         '{"id": 0, "new_text": "완성"}\n'
+         '{"id": 1, "new_text": "여기서 잘'],
+    ])
+    result = _turn(backend, message="바꿔줘", doc_nodes=_nodes(3))
+    assert result.intent == "edit"
+    assert result.edits == [{"id": 0, "new_text": "완성"}]
+    assert result.notes is not None and "잘려" in result.notes
+    assert len(backend.calls) == 1
+
+
+def test_stream_whole_json_contract_violation_falls_back():
+    """LLM이 JSONL을 어기고 여러 줄 통 JSON을 흘려도 통 JSON 사다리로 처리."""
+    backend = StreamFakeBackend([
+        ['{\n', '"intent": "edit", "reply": "고침",\n',
+         '"edits": [{"id": 1, "new_text": "값"}]\n', '}'],
+    ])
+    result = _turn(backend, message="바꿔줘", doc_nodes=_nodes(3))
+    assert result.intent == "edit"
+    assert result.edits == [{"id": 1, "new_text": "값"}]
+    assert len(backend.calls) == 1
+
+
+def test_stream_garbage_then_retry_via_chat():
+    """스트림이 산문이면 분리 경로 폴백 → 편집 1차 실패 → 재요청(chat)으로 성공."""
+    backend = StreamFakeBackend([
+        ["JSON도 JSONL도 아닌 산문 스트림"],       # 병합(스트림) 실패 → 분리 폴백
+        '{"intent": "edit"}',                       # 분리 분류 (chat)
+        ["여전히 산문 스트림"],                     # 편집 1차(스트림) 실패
+        '{"reply": "재시도 성공", "edits": [{"id": 0, "new_text": "고침"}]}',  # 재요청(chat)
+    ])
+    result = _turn(backend, message="바꿔줘", doc_nodes=_nodes(2))
+    assert result.edits == [{"id": 0, "new_text": "고침"}]
+    assert len(backend.calls) == 4
+    assert "JSON" in backend.calls[3][0]  # JSONL 재요청 경고 접두
+
+
+def test_stream_fill_chunk_jsonl():
+    """fill 청크도 스트리밍 JSONL로 수신된다."""
+    backend = StreamFakeBackend([
+        ['{"intent": "fill", "reply": ""}'],
+        ['{"reply": "채움"}\n'
+         '{"id": 1, "new_text": "우리기관"}\n'
+         '{"id": 2, "new_text": "2026년 7월"}\n'
+         '{"notes": ""}'],
+    ])
+    result = _turn(backend, message="양식 채워줘", doc_nodes=_nodes(4),
+                   placeholders=[{"id": 1, "token": "[기관명]"}])
+    assert result.intent == "fill"
+    assert result.edits == [
+        {"id": 1, "new_text": "우리기관"},
+        {"id": 2, "new_text": "2026년 7월"},
+    ]
+    assert len(backend.calls) == 2
+
+
+def test_stream_connection_error_propagates():
+    """스트림 도중이 아닌 호출 시점의 연결 오류는 그대로 전파된다."""
+    backend = StreamFakeBackend([LlmUnavailableError("서버 다운")])
+    with pytest.raises(LlmUnavailableError):
+        _turn(backend, message="바꿔줘", doc_nodes=_nodes(2))
