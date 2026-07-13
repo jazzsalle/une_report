@@ -104,6 +104,12 @@ run(charPrIDRef)` — **run은 있고 hp:t만 없다**. 따라서 기존 run에
 지시·실물 분량 예시)은 A5로 이미 해결**. 남은 단기 과제 3건을 구현한다.
 중기 과제(2단계 필드맵 파이프라인 §3-5, create 의도 배선 §3-6, 줄 단위
 프로토콜 §4.2-2)는 이번 범위에서 제외하고 후속으로 미룬다.
+→ **줄 단위 프로토콜(§4.2-2)은 2026-07-13 구현 완료**: edits를 JSONL
+(한 줄에 JSON 하나)로 계약하고 `chat_stream()`으로 수신, 완성 줄 단위로
+반영해 응답 잘림 내성을 확보했다 (`app/llm/jsonl_stream.py`,
+`prompts.JSONL_OUTPUT_RULES`, orchestrator `_chat_turn_stream` 사다리,
+잘림 부분 복구 `parse_llm_json_or_partial`, fill 청크 실패 격리,
+진행 상황 SSE status 중계 포함. 제약 문서: `docs/limitations.md` §1.5·1.9).
 
 ### B1. 스타일 기반 가이드 감지 (§3-2)
 
