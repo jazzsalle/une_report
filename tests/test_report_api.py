@@ -193,3 +193,57 @@ class TestExport:
             "sections": self.SECTIONS_WITH_CONTENT, "format": "pdf",
         })
         assert resp.status_code == 400
+
+
+class TestFlowE2E:
+    def test_toc_to_content_to_export_flow(self, env, tmp_path):
+        """목차 생성 → 본문 스트리밍 수신 → 결과를 트리에 배치 → hwpx 내보내기."""
+        client, app = env
+        fake = FakeReportClient(content_items=[
+            {"name": "1.1. 목적", "content": "확산 방지와 신속 대응 체계 구축.", "references": []},
+            {"name": "1.2. 배경", "content": "변이 확산으로 재유행 우려.\n\n| 구분 | 값 |\n| A | 1 |",
+             "references": [{"id": "c", "fileId": "f", "fileName": "지침.pdf", "page": "2"}]},
+        ])
+        _use(app, fake)
+
+        # 1) 목차
+        toc = client.post("/api/report/toc", json={"criteria": CRITERIA}).json()
+        sections = toc["sections"]
+
+        # 2) 본문 스트리밍 → (프론트 역할) 리프 순서대로 트리에 배치
+        events = parse_sse(client.post(
+            "/api/report/content", json={"criteria": CRITERIA, "sections": sections},
+        ).text)
+        results = [d for n, d in events if n == "section"]
+        assert len(results) == 2
+        # 본문 생성 요청에 목차가 그대로 전달됐다
+        assert fake.content_calls[0][1] == sections
+
+        leaves = iter(results)
+        def attach(nodes):
+            for node in nodes:
+                if node.get("children"):
+                    attach(node["children"])
+                else:
+                    item = next(leaves)
+                    node["content"] = item["content"]
+                    node["references"] = item["references"]
+        attach(sections)
+
+        # 3) 내보내기 → 스트리밍으로 받은 내용이 문서에 들어 있다
+        resp = client.post("/api/report/export", json={
+            "title": toc["title"], "sections": sections, "format": "hwpx",
+        })
+        assert resp.status_code == 200
+        out = tmp_path / "flow.hwpx"
+        out.write_bytes(resp.content)
+        from app.core.hwpx import extract_hwpx, find_section_files, parse_section, validate_hwpx
+        assert validate_hwpx(out).ok
+        extract_dir = tmp_path / "x"
+        extract_hwpx(out, extract_dir)
+        nodes, *_ = parse_section(find_section_files(extract_dir)[0])
+        texts = [n.text for n in nodes]
+        assert toc["title"] in texts
+        assert "1.1. 목적" in texts
+        assert "확산 방지와 신속 대응 체계 구축." in texts
+        assert "지침.pdf" in " ".join(texts)  # 참조 표기
