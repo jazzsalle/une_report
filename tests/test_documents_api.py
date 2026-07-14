@@ -41,16 +41,22 @@ def env(tmp_path: Path):
 
 
 def _make_user(db: sqlite3.Connection, account: str) -> tuple[int, str]:
-    """users+app_tokens에 사용자를 만들고 (user_id, Bearer 토큰)을 반환한다."""
+    """익명 단일 로컬 사용자를 보장하고 (user_id, 더미 토큰)을 반환한다.
+
+    로그인 삭제(T3Q 전환) — account 인자는 기존 호출부 호환용이며 무시된다.
+    """
+    from app.api.deps import LOCAL_USER_ACCOUNT
+
     now = database.now_iso()
     db.execute(
-        "INSERT INTO users(account, user_name, created_at) VALUES(?,?,?)", (account, account, now)
+        "INSERT OR IGNORE INTO users(account, user_name, created_at) VALUES(?,?,?)",
+        (LOCAL_USER_ACCOUNT, "로컬 사용자", now),
     )
-    user_id = db.execute("SELECT id FROM users WHERE account = ?", (account,)).fetchone()["id"]
-    token = secrets.token_urlsafe(16)
-    db.execute("INSERT INTO app_tokens(token, user_id, created_at) VALUES(?,?,?)", (token, user_id, now))
+    user_id = db.execute(
+        "SELECT id FROM users WHERE account = ?", (LOCAL_USER_ACCOUNT,)
+    ).fetchone()["id"]
     db.commit()
-    return user_id, token
+    return user_id, "no-auth"
 
 
 def _auth(token: str) -> dict:
@@ -257,46 +263,33 @@ class TestExport:
 
 
 # ---------------------------------------------------------------------------
-# 인증·소유권
+# 접근 규칙 (로그인 삭제 — 익명 단일 사용자)
 # ---------------------------------------------------------------------------
 
-class TestAuthOwnership:
-    def test_unauthenticated_returns_401(self, env, demo_form_hwpx):
+class TestAnonymousAccess:
+    def test_anonymous_access_allowed(self, env, demo_form_hwpx):
+        """인증 헤더 없이도 업로드·조회가 동작한다 (T3Q 전환 — 로그인 삭제)."""
         client, _, _ = env
         resp = client.post(
             "/api/documents",
             files={"file": ("demo.hwpx", demo_form_hwpx.read_bytes())},
         )
-        assert resp.status_code == 401
-        assert client.get("/api/documents").status_code == 401
-        assert client.get("/api/documents/xxx/preview").status_code == 401
+        assert resp.status_code == 200
+        assert client.get("/api/documents").status_code == 200
 
-    def test_bad_token_returns_401(self, env):
+    def test_stale_bearer_token_is_ignored(self, env):
+        """구 클라이언트가 보내는 Bearer 헤더는 무시되고 정상 동작한다."""
         client, _, _ = env
-        assert client.get("/api/documents", headers=_auth("no-such-token")).status_code == 401
+        assert client.get("/api/documents", headers=_auth("no-such-token")).status_code == 200
 
-    def test_other_users_document_returns_404(self, env, demo_form_hwpx):
+    def test_store_unknown_owner_still_keyerror(self, env, demo_form_hwpx):
+        """DocumentStore 계층의 소유자 검증 계약은 유지된다 (내부 정합성)."""
         client, db, files_dir = env
-        owner_id, owner_token = _make_user(db, "owner")
-        _, intruder_token = _make_user(db, "intruder")
-        doc = _upload(client, owner_token, demo_form_hwpx)
-        doc_id = doc["document_id"]
-
-        assert client.get(
-            f"/api/documents/{doc_id}/preview", headers=_auth(intruder_token)
-        ).status_code == 404
-        assert client.post(
-            f"/api/documents/{doc_id}/export", headers=_auth(intruder_token), json={"format": "hwpx"}
-        ).status_code == 404
-        assert client.get(
-            f"/api/documents/{doc_id}/versions", headers=_auth(intruder_token)
-        ).status_code == 404
-
-        # DocumentStore 계층에서도 KeyError (T4 소비 계약)
+        _make_user(db, "owner")
+        doc = _upload(client, "no-auth", demo_form_hwpx)
         store = DocumentStore(db, files_dir=files_dir)
-        intruder_id = db.execute("SELECT id FROM users WHERE account='intruder'").fetchone()["id"]
         with pytest.raises(KeyError):
-            store.get_preview(intruder_id, doc_id)
+            store.get_preview(999999, doc["document_id"])  # 존재하지 않는 소유자
 
     def test_missing_document_returns_404(self, env):
         client, db, _ = env

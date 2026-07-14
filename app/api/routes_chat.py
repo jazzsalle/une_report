@@ -8,9 +8,10 @@
 상태코드를 바꿀 수 없으므로 처리 오류도 200 + `error` 이벤트로 낸다.
 
 한 턴의 흐름:
-  rag_jwt 조회 → 세션 upsert → 문서 컨텍스트(get_nodes/get_placeholders)
-  → user 메시지 저장 → Orchestrator.run_turn → edits 있으면
+  세션 upsert → 문서 컨텍스트(get_nodes/get_placeholders)
+  → user 메시지 저장 → Orchestrator.run_turn(T3Q LLM) → edits 있으면
   apply_document_edits(새 버전) → assistant 메시지 저장 → 이벤트 송출.
+(로그인·rag_jwt는 T3Q 전환에서 삭제 — docs/t3q_upgrade_design.md §3)
 """
 import asyncio
 import json
@@ -66,10 +67,14 @@ class ChatRequest(BaseModel):
 
 
 def get_llm_backend() -> LLMBackend:
-    """LLM 백엔드 의존성. 테스트는 dependency_overrides로 FakeBackend를 주입한다."""
-    from app.llm.uni_rag_client import UniRagClient
+    """LLM 백엔드 의존성. 테스트는 dependency_overrides로 FakeBackend를 주입한다.
 
-    return UniRagClient()
+    T3Q 전환: UNI RAG → API-LLM-001(OpenAI 호환) 백엔드. LLMBackend
+    추상화 덕에 오케스트레이터는 무수정이다.
+    """
+    from app.llm.t3q_client import T3qChatBackend
+
+    return T3qChatBackend()
 
 
 def _sse(event: str, data: dict) -> str:
@@ -91,17 +96,8 @@ async def _chat_events(
             yield _sse("error", {"code": "bad_request", "message": "message가 비어 있습니다"})
             return
 
-        # 1) rag_jwt — LLM 호출용 UNI RAG 토큰 (서버 보관, 없으면 재로그인 필요)
-        row = db.execute(
-            "SELECT rag_jwt FROM auth_tokens WHERE user_id = ?", (user["id"],)
-        ).fetchone()
-        rag_jwt = row["rag_jwt"] if row is not None else None
-        if not rag_jwt:
-            yield _sse("error", {
-                "code": "auth",
-                "message": "UNI RAG 인증 토큰이 없습니다. 다시 로그인해 주세요.",
-            })
-            return
+        # 1) (로그인 삭제 — T3Q 전환) LLM 토큰 불요. 계약 유지용 빈 토큰.
+        rag_jwt = ""
 
         # 2) 세션 조회 (소유자 검증) — 없으면 새 id 발급
         session_id = body.session_id
@@ -239,7 +235,7 @@ async def _chat_events(
     except LlmAuthError:
         yield _sse("error", {
             "code": "auth",
-            "message": "UNI RAG 토큰이 만료되었습니다. 다시 로그인해 주세요.",
+            "message": "LLM 서비스 인증에 실패했습니다. 관리자에게 문의해 주세요.",
         })
     except LlmTimeoutError as e:
         yield _sse("error", {"code": "llm_timeout", "message": str(e)})

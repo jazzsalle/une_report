@@ -57,19 +57,24 @@ def env(tmp_path: Path):
 
 
 def _make_user(db: sqlite3.Connection, account: str) -> tuple[int, str]:
+    """익명 단일 로컬 사용자를 보장하고 (user_id, 더미 토큰)을 반환한다.
+
+    로그인 삭제(T3Q 전환) 후 모든 요청은 deps.get_current_user의
+    로컬 사용자 소유가 되므로, 테스트도 같은 사용자를 바라봐야 한다.
+    account 인자는 기존 호출부 호환용이며 무시된다.
+    """
+    from app.api.deps import LOCAL_USER_ACCOUNT
+
     now = database.now_iso()
     db.execute(
-        "INSERT INTO users(account, user_name, created_at) VALUES(?,?,?)", (account, account, now)
+        "INSERT OR IGNORE INTO users(account, user_name, created_at) VALUES(?,?,?)",
+        (LOCAL_USER_ACCOUNT, "로컬 사용자", now),
     )
-    user_id = db.execute("SELECT id FROM users WHERE account = ?", (account,)).fetchone()["id"]
-    token = secrets.token_urlsafe(16)
-    db.execute("INSERT INTO app_tokens(token, user_id, created_at) VALUES(?,?,?)", (token, user_id, now))
-    db.execute(
-        "INSERT INTO auth_tokens(user_id, rag_jwt, issued_at) VALUES(?,?,?)",
-        (user_id, f"rag-jwt-{account}", now),
-    )
+    user_id = db.execute(
+        "SELECT id FROM users WHERE account = ?", (LOCAL_USER_ACCOUNT,)
+    ).fetchone()["id"]
     db.commit()
-    return user_id, token
+    return user_id, "no-auth"  # 토큰은 더 이상 검사되지 않는다
 
 
 def _auth(token: str) -> dict:
@@ -299,8 +304,8 @@ def test_app_serves_spa_and_health(tmp_path, monkeypatch):
     monkeypatch.setattr(config, "DB_PATH", tmp_path / "app.db")
     monkeypatch.setattr(config, "FILES_DIR", tmp_path / "files")
     monkeypatch.setattr(config, "DATA_DIR", tmp_path)
-    # 헬스체크의 UNI RAG 프로브가 외부로 나가지 않게 즉시 실패 주소로 재지정
-    monkeypatch.setattr(config, "UNI_RAG_BASE_URL", "http://127.0.0.1:9")
+    # 헬스체크의 T3Q 프로브가 외부로 나가지 않게 즉시 실패 주소로 재지정
+    monkeypatch.setattr(config, "T3Q_BASE_URL", "http://127.0.0.1:9")
 
     app = create_app()
     with TestClient(app) as client:

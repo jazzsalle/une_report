@@ -22,7 +22,6 @@ def create_app() -> FastAPI:
     app = FastAPI(title="hwpx-chat-editor", lifespan=lifespan)
 
     from app.api import (
-        routes_auth,
         routes_chat,
         routes_documents,
         routes_health,
@@ -30,7 +29,6 @@ def create_app() -> FastAPI:
     )
 
     app.include_router(routes_health.router, prefix="/api")
-    app.include_router(routes_auth.router, prefix="/api")
     app.include_router(routes_documents.router, prefix="/api")
     app.include_router(routes_chat.router, prefix="/api")
     app.include_router(routes_sessions.router, prefix="/api")

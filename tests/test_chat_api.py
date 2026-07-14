@@ -45,22 +45,23 @@ def env(tmp_path: Path):
     db.close()
 
 
-def _make_user(db: sqlite3.Connection, account: str, rag_jwt: str | None = "rag-jwt") -> tuple[int, str]:
-    """users+app_tokens(+auth_tokens)에 사용자를 만들고 (user_id, Bearer 토큰) 반환."""
+def _make_user(db: sqlite3.Connection, account: str, rag_jwt: str | None = None) -> tuple[int, str]:
+    """익명 단일 로컬 사용자를 보장하고 (user_id, 더미 토큰) 반환.
+
+    로그인 삭제(T3Q 전환) — account·rag_jwt 인자는 기존 호출부 호환용이며 무시된다.
+    """
+    from app.api.deps import LOCAL_USER_ACCOUNT
+
     now = database.now_iso()
     db.execute(
-        "INSERT INTO users(account, user_name, created_at) VALUES(?,?,?)", (account, account, now)
+        "INSERT OR IGNORE INTO users(account, user_name, created_at) VALUES(?,?,?)",
+        (LOCAL_USER_ACCOUNT, "로컬 사용자", now),
     )
-    user_id = db.execute("SELECT id FROM users WHERE account = ?", (account,)).fetchone()["id"]
-    token = secrets.token_urlsafe(16)
-    db.execute("INSERT INTO app_tokens(token, user_id, created_at) VALUES(?,?,?)", (token, user_id, now))
-    if rag_jwt is not None:
-        db.execute(
-            "INSERT INTO auth_tokens(user_id, rag_jwt, issued_at) VALUES(?,?,?)",
-            (user_id, rag_jwt, now),
-        )
+    user_id = db.execute(
+        "SELECT id FROM users WHERE account = ?", (LOCAL_USER_ACCOUNT,)
+    ).fetchone()["id"]
     db.commit()
-    return user_id, token
+    return user_id, "no-auth"
 
 
 def _auth(token: str) -> dict:
@@ -113,14 +114,15 @@ class TestQueryChat:
         assert token_ev["text"] == "hwpx는 한글 문서 표준 포맷입니다."
         assert done["session_id"]  # 서버가 uuid hex 발급
 
-    def test_rag_jwt_passed_to_backend(self, env):
+    def test_backend_called_without_auth_token(self, env):
+        """로그인 삭제 — 백엔드에는 빈 토큰이 전달된다 (계약 유지용)."""
         client, db, app = env
-        _, token = _make_user(db, "jwt-user", rag_jwt="my-rag-jwt")
+        _, token = _make_user(db, "jwt-user")
         backend = FakeBackend(["답"])
         _use_backend(app, backend)
 
         _chat(client, token, {"message": "질문"})
-        assert backend.calls[0][2]["token"] == "my-rag-jwt"
+        assert backend.calls[0][2]["token"] == ""
 
 
 # ---------------------------------------------------------------------------
@@ -128,17 +130,6 @@ class TestQueryChat:
 # ---------------------------------------------------------------------------
 
 class TestErrorEvents:
-    def test_missing_rag_jwt_yields_auth_error(self, env):
-        client, db, app = env
-        _, token = _make_user(db, "no-jwt", rag_jwt=None)
-        _use_backend(app, FakeBackend(["호출되면 안 됨"]))
-
-        events = _chat(client, token, {"message": "안녕"})
-        assert len(events) == 1
-        name, data = events[0]
-        assert name == "error"
-        assert data["code"] == "auth"
-
     @pytest.mark.parametrize("exc,code", [
         (LlmAuthError("토큰 만료"), "auth"),
         (LlmTimeoutError("120s 초과"), "llm_timeout"),
@@ -181,10 +172,14 @@ class TestErrorEvents:
         assert events[0][0] == "error"
         assert events[0][1]["code"] == "bad_request"
 
-    def test_unauthenticated_returns_401(self, env):
+    def test_anonymous_access_allowed(self, env):
+        """로그인 삭제 — 인증 헤더 없이도 채팅이 동작한다 (익명 단일 사용자)."""
         client, _, app = env
-        _use_backend(app, FakeBackend([]))
-        assert client.post("/api/chat", json={"message": "안녕"}).status_code == 401
+        _use_backend(app, FakeBackend(["익명 답변"]))
+        resp = client.post("/api/chat", json={"message": "안녕"})
+        assert resp.status_code == 200
+        events = parse_sse(resp.text)
+        assert [n for n, _ in events] == ["status", "token", "done"]
 
 
 # ---------------------------------------------------------------------------
@@ -235,31 +230,15 @@ class TestSessionPersistence:
         count = db.execute("SELECT COUNT(*) AS c FROM sessions").fetchone()["c"]
         assert count == 1
 
-    def test_other_users_session_messages_404(self, env):
+    def test_unknown_session_messages_404(self, env):
+        """존재하지 않는 세션 id 조회는 404 (익명 단일 사용자 체계)."""
         client, db, app = env
-        _, owner_token = _make_user(db, "sess-owner")
-        _, intruder_token = _make_user(db, "sess-intruder")
+        _, token = _make_user(db, "sess-owner")
         _use_backend(app, FakeBackend(["답"]))
 
-        events = _chat(client, owner_token, {"message": "비밀 대화"})
-        session_id = events[-1][1]["session_id"]
-
-        resp = client.get(f"/api/sessions/{session_id}/messages", headers=_auth(intruder_token))
+        _chat(client, token, {"message": "대화"})
+        resp = client.get("/api/sessions/no-such-session/messages", headers=_auth(token))
         assert resp.status_code == 404
-
-    def test_other_users_session_id_rejected_in_chat(self, env):
-        client, db, app = env
-        _, owner_token = _make_user(db, "chat-owner")
-        _, intruder_token = _make_user(db, "chat-intruder")
-        backend = FakeBackend(["답", "안 옴"])
-        _use_backend(app, backend)
-
-        events = _chat(client, owner_token, {"message": "내 세션"})
-        session_id = events[-1][1]["session_id"]
-
-        events2 = _chat(client, intruder_token, {"message": "훔친 세션", "session_id": session_id})
-        assert events2[0][0] == "error"
-        assert events2[0][1]["code"] == "bad_request"
 
 
 # ---------------------------------------------------------------------------

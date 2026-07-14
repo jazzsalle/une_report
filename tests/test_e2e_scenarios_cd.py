@@ -221,7 +221,7 @@ def test_scenario_d_query_leaves_document_unchanged_then_edit_applies(
     for _query, history, opts in backend.calls[1:]:
         assert {"role": "user", "content": question} in history
         assert {"role": "assistant", "content": answer} in history
-        assert opts["token"] == "rag-jwt-scenario-d"
+        assert opts["token"] == ""  # 로그인 삭제 — 빈 토큰 (계약 유지용)
 
     # 4) export 재파싱 — 반영된 텍스트 존재 + 나머지 노드 원문 보존
     exported = _export_hwpx(client, token, doc_id, tmp_path / "scenario_d.hwpx")
