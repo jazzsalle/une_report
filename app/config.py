@@ -24,6 +24,17 @@ PROMPT_CHAR_BUDGET = int(os.getenv("PROMPT_CHAR_BUDGET", "30000"))
 # (서식1급 5,386노드를 전량 순회하면 LLM 호출이 수백 회로 폭주).
 FILL_NODE_LIMIT = int(os.getenv("FILL_NODE_LIMIT", "300"))
 
+# T3Q 플랫폼 (재난안전계획서 생성 API + OpenAI 호환 LLM — docs/t3q_upgrade_design.md)
+T3Q_BASE_URL = os.getenv("T3Q_BASE_URL", "https://plf.mois-disaster.t3q.ai")
+# TLS: 기본은 CA 파일 검증. 실측(2026-07-14) cadm-ca.crt는 UNE 자체 CA라
+# T3Q 서버(*.t3q.ai 발급) 체인과 불일치 — 올바른 CA 확보 전까지
+# T3Q_TLS_VERIFY=false 우회 운용 (설계 §6, limitations 참조).
+T3Q_CA_PATH = Path(os.getenv("T3Q_CA_PATH", BASE_DIR / "certs" / "cadm-ca.crt"))
+T3Q_TLS_VERIFY = os.getenv("T3Q_TLS_VERIFY", "true").lower() not in ("false", "0", "no")
+# 본문 생성은 섹션 수에 비례해 오래 걸린다 (실측: 2개 섹션 약 43초)
+T3Q_TIMEOUT = float(os.getenv("T3Q_TIMEOUT", "600"))
+T3Q_LLM_MODEL = os.getenv("T3Q_LLM_MODEL", "mois")  # API-LLM-001 고정값
+
 # 저장소
 DATA_DIR = Path(os.getenv("DATA_DIR", BASE_DIR / "data"))
 FILES_DIR = DATA_DIR / "files"
