@@ -1,26 +1,4 @@
-// api.js — 백엔드 REST/SSE 래퍼. Bearer 토큰은 메모리 + sessionStorage에 보관한다.
-
-const TOKEN_KEY = 'hwpx_chat_token'
-
-let token = sessionStorage.getItem(TOKEN_KEY) || null
-
-export function getToken() {
-  return token
-}
-
-export function setToken(value) {
-  token = value || null
-  if (token) sessionStorage.setItem(TOKEN_KEY, token)
-  else sessionStorage.removeItem(TOKEN_KEY)
-}
-
-export function clearToken() {
-  setToken(null)
-}
-
-function authHeaders() {
-  return token ? { Authorization: `Bearer ${token}` } : {}
-}
+// api.js — 백엔드 REST/SSE 래퍼. (T3Q 전환 — 로그인·토큰 없음)
 
 export class ApiError extends Error {
   constructor(message, status) {
@@ -53,46 +31,26 @@ async function extractErrorMessage(res) {
   return msg
 }
 
-// ---------------------------------------------------------------- REST
-
-/** POST /api/auth/login → { token, user_name }. 성공 시 토큰을 저장한다. */
-export async function login(account, password) {
-  const res = await fetch('/api/auth/login', {
-    method: 'POST',
-    headers: { 'Content-Type': 'application/json' },
-    body: JSON.stringify({ account, password }),
-  })
-  const data = await handleJson(res)
-  setToken(data.token)
-  return data
-}
+// ---------------------------------------------------------------- 문서 (hwpx 편집 모드)
 
 /** POST /api/documents (multipart, 필드명 file) → { document_id, title, pages, version } */
 export async function uploadDocument(file) {
   const form = new FormData()
   form.append('file', file)
-  const res = await fetch('/api/documents', {
-    method: 'POST',
-    headers: authHeaders(),
-    body: form,
-  })
+  const res = await fetch('/api/documents', { method: 'POST', body: form })
   return handleJson(res)
 }
 
 /** GET /api/documents/{id}/preview?version= → { html, page_count, version } */
 export async function getPreview(documentId, version) {
   const query = version != null ? `?version=${encodeURIComponent(version)}` : ''
-  const res = await fetch(`/api/documents/${documentId}/preview${query}`, {
-    headers: authHeaders(),
-  })
+  const res = await fetch(`/api/documents/${documentId}/preview${query}`)
   return handleJson(res)
 }
 
 /** GET /api/sessions/{id}/messages → [{ role, content, intent, created_at }] */
 export async function getMessages(sessionId) {
-  const res = await fetch(`/api/sessions/${sessionId}/messages`, {
-    headers: authHeaders(),
-  })
+  const res = await fetch(`/api/sessions/${sessionId}/messages`)
   return handleJson(res)
 }
 
@@ -114,55 +72,71 @@ export function parseContentDisposition(header) {
   return null
 }
 
-/** POST /api/documents/{id}/export → { blob, filename } */
-export async function exportDocument(documentId, format = 'hwpx') {
-  const res = await fetch(`/api/documents/${documentId}/export`, {
-    method: 'POST',
-    headers: { ...authHeaders(), 'Content-Type': 'application/json' },
-    body: JSON.stringify({ format }),
-  })
+async function downloadResponse(res, fallbackName) {
   if (!res.ok) {
     throw new ApiError(await extractErrorMessage(res), res.status)
   }
   const blob = await res.blob()
   const filename =
-    parseContentDisposition(res.headers.get('Content-Disposition')) || `document.${format}`
+    parseContentDisposition(res.headers.get('Content-Disposition')) || fallbackName
   return { blob, filename }
 }
 
-// ---------------------------------------------------------------- SSE
+/** POST /api/documents/{id}/export → { blob, filename } */
+export async function exportDocument(documentId, format = 'hwpx') {
+  const res = await fetch(`/api/documents/${documentId}/export`, {
+    method: 'POST',
+    headers: { 'Content-Type': 'application/json' },
+    body: JSON.stringify({ format }),
+  })
+  return downloadResponse(res, `document.${format}`)
+}
+
+// ---------------------------------------------------------------- 보고서 생성 (T3Q)
+
+/** POST /api/report/toc → { title, sections } */
+export async function generateToc(criteria) {
+  const res = await fetch('/api/report/toc', {
+    method: 'POST',
+    headers: { 'Content-Type': 'application/json' },
+    body: JSON.stringify({ criteria }),
+  })
+  return handleJson(res)
+}
+
+/** POST /api/report/export → { blob, filename } */
+export async function exportReport(title, sections, format = 'hwpx') {
+  const res = await fetch('/api/report/export', {
+    method: 'POST',
+    headers: { 'Content-Type': 'application/json' },
+    body: JSON.stringify({ title, sections, format }),
+  })
+  return downloadResponse(res, `report.${format}`)
+}
+
+// ---------------------------------------------------------------- SSE 공통
 
 /**
- * POST /api/chat 를 fetch + ReadableStream으로 소비한다.
- * (EventSource는 POST를 지원하지 않으므로 event:/data: 라인을 직접 파싱.
- *  빈 줄이 이벤트 경계이고, data: 가 여러 줄이면 \n으로 결합한다.)
- *
- * @param {{session_id?: string, document_id?: string, message: string, selection?: number[], base_version?: number}} payload
- * @param {{onStatus?, onToken?, onDocumentUpdated?, onDone?, onError?}} callbacks
+ * POST + SSE(event:/data: 라인) 소비 공통기.
+ * (EventSource는 POST 미지원 — fetch + ReadableStream으로 직접 파싱.
+ *  빈 줄이 이벤트 경계, data: 여러 줄은 \n으로 결합)
+ * handlers는 { [이벤트명]: (data) => void } 형태이고, 알 수 없는 이벤트는 무시한다.
  */
-export async function streamChat(payload, callbacks = {}) {
+async function streamSse(url, payload, handlers) {
   let res
   try {
-    res = await fetch('/api/chat', {
+    res = await fetch(url, {
       method: 'POST',
-      headers: {
-        ...authHeaders(),
-        'Content-Type': 'application/json',
-        Accept: 'text/event-stream',
-      },
+      headers: { 'Content-Type': 'application/json', Accept: 'text/event-stream' },
       body: JSON.stringify(payload),
     })
   } catch (e) {
-    callbacks.onError?.({ code: 'network', message: `서버에 연결할 수 없습니다: ${e.message}` })
+    handlers.error?.({ code: 'network', message: `서버에 연결할 수 없습니다: ${e.message}` })
     return
   }
 
   if (!res.ok || !res.body) {
-    const message = await extractErrorMessage(res)
-    callbacks.onError?.({
-      code: res.status === 401 ? 'auth' : 'bad_request',
-      message,
-    })
+    handlers.error?.({ code: 'bad_request', message: await extractErrorMessage(res) })
     return
   }
 
@@ -187,25 +161,7 @@ export async function streamChat(payload, callbacks = {}) {
     } catch {
       data = { text: raw }
     }
-    switch (name) {
-      case 'status':
-        callbacks.onStatus?.(data)
-        break
-      case 'token':
-        callbacks.onToken?.(data)
-        break
-      case 'document_updated':
-        callbacks.onDocumentUpdated?.(data)
-        break
-      case 'done':
-        callbacks.onDone?.(data)
-        break
-      case 'error':
-        callbacks.onError?.(data)
-        break
-      default:
-        break // 알 수 없는 이벤트는 무시
-    }
+    handlers[name]?.(data)
   }
 
   const handleLine = (line) => {
@@ -244,6 +200,36 @@ export async function streamChat(payload, callbacks = {}) {
     }
     dispatch()
   } catch (e) {
-    callbacks.onError?.({ code: 'network', message: `스트림이 중단되었습니다: ${e.message}` })
+    handlers.error?.({ code: 'network', message: `스트림이 중단되었습니다: ${e.message}` })
   }
+}
+
+/**
+ * POST /api/chat (hwpx 편집 모드 대화)
+ * @param {{session_id?, document_id?, message, selection?, base_version?}} payload
+ * @param {{onStatus?, onToken?, onDocumentUpdated?, onDone?, onError?}} callbacks
+ */
+export async function streamChat(payload, callbacks = {}) {
+  await streamSse('/api/chat', payload, {
+    status: callbacks.onStatus,
+    token: callbacks.onToken,
+    document_updated: callbacks.onDocumentUpdated,
+    done: callbacks.onDone,
+    error: callbacks.onError,
+  })
+}
+
+/**
+ * POST /api/report/content (본문 생성 SSE — 목차별 도착 즉시 콜백)
+ * @param {{criteria: object, sections: object[]}} payload
+ * @param {{onStatus?, onSection?, onSectionError?, onDone?, onError?}} callbacks
+ */
+export async function streamReportContent(payload, callbacks = {}) {
+  await streamSse('/api/report/content', payload, {
+    status: callbacks.onStatus,
+    section: callbacks.onSection,
+    section_error: callbacks.onSectionError,
+    done: callbacks.onDone,
+    error: callbacks.onError,
+  })
 }
