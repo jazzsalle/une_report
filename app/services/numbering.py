@@ -57,6 +57,38 @@ def detect_item_scheme(nodes: list[dict]) -> list[str]:
     return seen
 
 
+def starts_with_marker(text: str) -> bool:
+    """텍스트가 항목 번호·기호로 시작하는가 (문서 조립의 줄바꿈 판단용)."""
+    stripped = (text or "").strip()
+    if not stripped:
+        return False
+    return any(pattern.match(stripped) for _name, pattern in _MARKER_PATTERNS)
+
+
+# 문장 중간 분할용 마커: 공백 뒤에 오는 기호류·괄호류·"N)" 형태만.
+# 순수 숫자("1.")·한글("가.") 마커는 날짜("2026. 7. 13.")·약어와 충돌하므로
+# 중간 분할에서는 제외한다 — 줄 시작 판정(starts_with_marker)은 전체를 본다.
+_INLINE_SPLIT_RE = re.compile(
+    r"(?<=\s)(?="
+    rf"[①-⑳㉠-㉻□■◇◆○●◎◦ㆍ·•]"
+    rf"|[-–—―]\s"
+    rf"|\(\d{{1,2}}\)\s"
+    rf"|\([{_GANADA}]\)\s"
+    rf"|\d{{1,2}}\)\s"
+    r")"
+)
+
+
+def split_outline_runs(text: str) -> list[str]:
+    """새 항목 기호가 나타나는 위치마다 텍스트를 나눈다 (기호는 유지).
+
+    "○ 첫 항목 ○ 둘째 항목" → ["○ 첫 항목", "○ 둘째 항목"].
+    문서 작성 방식(항목마다 줄바꿈) 준수용 — 사용자 지시 2026-07-14.
+    """
+    parts = [p.strip() for p in _INLINE_SPLIT_RE.split(text or "")]
+    return [p for p in parts if p]
+
+
 def build_numbering_rule(scheme: list[str]) -> str:
     """프롬프트 '규칙' 목록에 끼워 넣을 항목 부여 규칙 한 덩어리를 만든다.
 

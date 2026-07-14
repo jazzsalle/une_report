@@ -95,3 +95,64 @@ class TestBuildDocx:
         styles = {p.text: p.style.name for p in doc.paragraphs}
         assert styles["1. 개요"] == "Heading 1"
         assert styles["1.1. 목적"] == "Heading 2"
+
+
+class TestOutlineLineBreaks:
+    """새 문단개요번호·기호가 나오면 항상 줄바꿈 (사용자 지시 2026-07-14)."""
+
+    def test_marker_lines_not_joined(self):
+        """개행으로 이어진 개요 항목들은 공백으로 합치지 않고 각각 문단."""
+        blocks = markdown_blocks("○ 첫 항목\n○ 둘째 항목\n― 세부 내용")
+        assert blocks == [("p", "○ 첫 항목"), ("p", "○ 둘째 항목"), ("p", "― 세부 내용")]
+
+    def test_inline_markers_split_mid_text(self):
+        """한 줄 안에 기호가 이어져도 기호마다 문단을 나눈다."""
+        blocks = markdown_blocks("□ 검토배경 ○ 확진자 증가 ○ 변이 확산")
+        assert blocks == [
+            ("p", "□ 검토배경"), ("p", "○ 확진자 증가"), ("p", "○ 변이 확산"),
+        ]
+
+    def test_numbered_lines_break_but_dates_do_not_split(self):
+        """줄 시작의 "1."류는 새 문단, 문장 중간 날짜(2026. 7. 13.)는 안 나눔."""
+        blocks = markdown_blocks("1. 개요 설명\n2. 기준일은 2026. 7. 13. 기준이다")
+        assert blocks == [
+            ("p", "1. 개요 설명"),
+            ("p", "2. 기준일은 2026. 7. 13. 기준이다"),
+        ]
+
+    def test_plain_continuation_lines_still_joined(self):
+        """기호 없는 이어짐 줄은 종전대로 한 문단으로 합친다."""
+        blocks = markdown_blocks("첫 줄 내용이\n둘째 줄로 이어진다")
+        assert blocks == [("p", "첫 줄 내용이 둘째 줄로 이어진다")]
+
+
+class TestTableWidth:
+    """표 열폭: 160mm 상한 균등 분배 (사용자 지시 2026-07-14)."""
+
+    TABLE_MD = "| 구분 | 1분기 | 2분기 | 비고 |\n| A | 1 | 2 | - |"
+
+    def test_hwpx_columns_equal_within_160mm(self, tmp_path):
+        out = tmp_path / "w.hwpx"
+        build_report_hwpx("표 폭", [
+            {"name": "1. 표", "content": self.TABLE_MD, "references": [], "children": []},
+        ], out)
+        extract_dir = tmp_path / "x"
+        extract_hwpx(out, extract_dir)
+        nodes, *_ = parse_section(find_section_files(extract_dir)[0])
+        cells = [n for n in nodes if n.type == "table_cell" and n.row == 0]
+        assert len(cells) == 4
+        widths = [c.cell_width_mm for c in cells]
+        assert all(w == widths[0] for w in widths), "열폭 균등 분배"
+        assert abs(sum(widths) - 160) <= 2  # 반올림 오차 허용
+
+    def test_docx_columns_equal_within_160mm(self, tmp_path):
+        from docx.shared import Mm
+        out = tmp_path / "w.docx"
+        build_report_docx("표 폭", [
+            {"name": "1. 표", "content": self.TABLE_MD, "references": [], "children": []},
+        ], out)
+        doc = Document(str(out))
+        table = doc.tables[0]
+        expected = Mm(160 / 4)
+        for column in table.columns:
+            assert abs(column.width - expected) <= Mm(0.5)

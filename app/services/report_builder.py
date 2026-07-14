@@ -13,7 +13,14 @@ import re
 from pathlib import Path
 
 from docx import Document
+from docx.shared import Mm
 from hwpx.document import HwpxDocument
+
+from app.core.hwpx.models import HWP_UNITS_PER_MM
+from app.services.numbering import split_outline_runs, starts_with_marker
+
+# 표 폭 상한(mm) — 열은 이 폭 안에서 균등 분배한다 (사용자 지시 2026-07-14)
+TABLE_WIDTH_MM = 160
 
 # 표 구분선 행: | :--- | ---: | 형태
 _TABLE_SEP_RE = re.compile(r"^\s*\|?[\s:\-|]+\|?\s*$")
@@ -42,8 +49,9 @@ def markdown_blocks(content: str) -> list[tuple[str, object]]:
         nonlocal para_lines
         if para_lines:
             text = _clean_text(" ".join(para_lines))
-            if text:
-                blocks.append(("p", text))
+            # 새 항목 기호가 나올 때마다 항상 줄바꿈 (문단 분리)
+            for piece in split_outline_runs(text):
+                blocks.append(("p", piece))
             para_lines = []
 
     def _flush_table() -> None:
@@ -64,6 +72,9 @@ def markdown_blocks(content: str) -> list[tuple[str, object]]:
         if not stripped:
             _flush_para()
         else:
+            # 항목 기호로 시작하는 줄은 이전 줄과 합치지 않고 새 문단으로
+            if para_lines and starts_with_marker(stripped):
+                _flush_para()
             para_lines.append(stripped)
     _flush_para()
     _flush_table()
@@ -142,7 +153,10 @@ def build_report_hwpx(title: str, sections: list[dict], output_path: str | Path)
             n_cols = max(len(r) for r in rows)
             if n_cols == 0:
                 return
-            table = doc.add_table(len(rows), n_cols)
+            # 폭 160mm 고정 — python-hwpx가 열폭을 균등 분배한다 (_distribute_size)
+            table = doc.add_table(
+                len(rows), n_cols, width=round(TABLE_WIDTH_MM * HWP_UNITS_PER_MM)
+            )
             for r, row in enumerate(rows):
                 for c, value in enumerate(row):
                     table.cell(r, c).set_text(str(value))
@@ -174,9 +188,16 @@ def build_report_docx(title: str, sections: list[dict], output_path: str | Path)
             return
         table = doc.add_table(rows=len(rows), cols=n_cols)
         table.style = "Table Grid"
+        # 폭 160mm 균등 분배 (Word는 열 width 외에 셀 width도 지정해야 반영됨)
+        table.autofit = False
+        col_width = Mm(TABLE_WIDTH_MM / n_cols)
+        for column in table.columns:
+            column.width = col_width
         for r, row in enumerate(rows):
             for c, value in enumerate(row):
-                table.cell(r, c).text = str(value)
+                cell = table.cell(r, c)
+                cell.width = col_width
+                cell.text = str(value)
 
     _walk_sections(
         sections,
