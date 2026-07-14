@@ -25,10 +25,12 @@ def create_app() -> FastAPI:
         routes_chat,
         routes_documents,
         routes_health,
+        routes_report,
         routes_sessions,
     )
 
     app.include_router(routes_health.router, prefix="/api")
+    app.include_router(routes_report.router, prefix="/api")
     app.include_router(routes_documents.router, prefix="/api")
     app.include_router(routes_chat.router, prefix="/api")
     app.include_router(routes_sessions.router, prefix="/api")
