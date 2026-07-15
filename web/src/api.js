@@ -104,12 +104,24 @@ export async function generateToc(criteria) {
   return handleJson(res)
 }
 
-/** POST /api/report/export → { blob, filename } */
-export async function exportReport(title, sections, format = 'hwpx') {
+/** GET /api/report/templates → { templates: [{id, name, has_table}] } */
+export async function getReportTemplates() {
+  const res = await fetch('/api/report/templates')
+  return handleJson(res)
+}
+
+/** POST /api/report/export → { blob, filename } (template: 표준 템플릿 id) */
+export async function exportReport(title, sections, format = 'hwpx', options = {}) {
   const res = await fetch('/api/report/export', {
     method: 'POST',
     headers: { 'Content-Type': 'application/json' },
-    body: JSON.stringify({ title, sections, format }),
+    body: JSON.stringify({
+      title,
+      sections,
+      format,
+      subtitle: options.subtitle || '',
+      template: options.template || '',
+    }),
   })
   return downloadResponse(res, `report.${format}`)
 }

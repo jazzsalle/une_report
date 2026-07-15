@@ -28,6 +28,9 @@ T3Q_TLS_VERIFY = os.getenv("T3Q_TLS_VERIFY", "true").lower() not in ("false", "0
 T3Q_TIMEOUT = float(os.getenv("T3Q_TIMEOUT", "600"))
 T3Q_LLM_MODEL = os.getenv("T3Q_LLM_MODEL", "mois")  # API-LLM-001 고정값
 
+# 보고서 표준 템플릿 (서식 표본 hwpx — docs/t3q_upgrade_design.md 부록 규약)
+REPORT_TEMPLATES_DIR = Path(os.getenv("REPORT_TEMPLATES_DIR", BASE_DIR / "templates"))
+
 # 저장소
 DATA_DIR = Path(os.getenv("DATA_DIR", BASE_DIR / "data"))
 FILES_DIR = DATA_DIR / "files"

@@ -4,6 +4,17 @@
       <span class="report-title">{{ title || '생성 문서' }}</span>
       <span v-if="progressText" class="report-progress">{{ progressText }}</span>
       <span class="topbar-spacer"></span>
+      <label v-if="templates.length" class="tpl-select">
+        서식
+        <select
+          :value="template"
+          :disabled="busy"
+          @change="$emit('update:template', $event.target.value)"
+        >
+          <option value="">기본 (서식 없음)</option>
+          <option v-for="t in templates" :key="t.id" :value="t.id">{{ t.name }}</option>
+        </select>
+      </label>
       <button type="button" class="ghost-btn" :disabled="busy" @click="$emit('back-to-toc')">
         목차로
       </button>
@@ -48,8 +59,10 @@ const props = defineProps({
   // [{name, status: waiting|generating|done|error, content, references, error}]
   leaves: { type: Array, required: true },
   busy: { type: Boolean, default: false },
+  templates: { type: Array, default: () => [] }, // 표준 템플릿 목록 [{id, name}]
+  template: { type: String, default: '' },       // 선택된 템플릿 id
 })
-defineEmits(['export', 'back-to-toc'])
+defineEmits(['export', 'back-to-toc', 'update:template'])
 
 const STATUS_LABEL = {
   waiting: '대기',

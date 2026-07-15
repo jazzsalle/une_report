@@ -247,3 +247,42 @@ class TestFlowE2E:
         assert "1.1. 목적" in texts
         assert "확산 방지와 신속 대응 체계 구축." in texts
         assert "지침.pdf" in " ".join(texts)  # 참조 표기
+
+
+class TestTemplates:
+    def test_list_templates(self, env):
+        client, app = env
+        resp = client.get("/api/report/templates")
+        assert resp.status_code == 200
+        items = {t["id"]: t for t in resp.json()["templates"]}
+        assert "AI 행정문서 템플릿" in items
+        assert items["AI 행정문서 템플릿"]["has_table"] is True
+
+    def test_export_with_template_and_subtitle(self, env, tmp_path):
+        client, app = env
+        resp = client.post("/api/report/export", json={
+            "title": "대비계획서",
+            "subtitle": "서면 보고 / 2026. 7. 15.(수) / 담당자",
+            "sections": [{"name": "1. 개요", "content": "○ 본문", "references": [], "children": []}],
+            "format": "hwpx",
+            "template": "AI 행정문서 템플릿",
+        })
+        assert resp.status_code == 200
+        out = tmp_path / "tpl.hwpx"
+        out.write_bytes(resp.content)
+        from app.core.hwpx import extract_hwpx, find_section_files, parse_section, validate_hwpx
+        assert validate_hwpx(out).ok
+        extract_dir = tmp_path / "x"
+        extract_hwpx(out, extract_dir)
+        nodes, *_ = parse_section(find_section_files(extract_dir)[0])
+        texts = [n.text for n in nodes]
+        assert texts[0] == "대비계획서"
+        assert texts[1].startswith("서면 보고 /")
+
+    def test_export_unknown_template_400(self, env):
+        client, app = env
+        resp = client.post("/api/report/export", json={
+            "sections": [{"name": "1.", "content": "x", "children": []}],
+            "format": "hwpx", "template": "없는템플릿",
+        })
+        assert resp.status_code == 400

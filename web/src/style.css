@@ -327,3 +327,14 @@ button:disabled { opacity: 0.55; cursor: not-allowed; }
   color: #64748b;
   font-size: 12.5px;
 }
+
+/* 템플릿 선택 (본문 뷰 툴바) */
+.tpl-select { display: flex; align-items: center; gap: 6px; font-size: 13px; color: #475569; }
+.tpl-select select {
+  font: inherit;
+  padding: 4px 8px;
+  border: 1px solid #cbd5e1;
+  border-radius: 4px;
+  background: #fff;
+  max-width: 220px;
+}

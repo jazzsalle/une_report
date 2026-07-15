@@ -43,6 +43,9 @@
           :title="toc.title"
           :leaves="leaves"
           :busy="phase === 'generating'"
+          :templates="templates"
+          :template="selectedTemplate"
+          @update:template="selectedTemplate = $event"
           @back-to-toc="phase = 'toc'"
           @export="doExport"
         />
@@ -54,12 +57,12 @@
 <script setup>
 // 재난안전계획서 생성 도구 (T3Q 전환 — docs/t3q_upgrade_design.md §4)
 // 흐름: 기준정보 입력 → (채팅 트리거) 목차 생성 → 목차 편집 → 본문 스트리밍 → 내보내기
-import { ref } from 'vue'
+import { onMounted, ref } from 'vue'
 import ChatPanel from '../components/ChatPanel.vue'
 import CriteriaPanel from '../components/CriteriaPanel.vue'
 import ReportView from '../components/ReportView.vue'
 import TocView from '../components/TocView.vue'
-import { exportReport, generateToc, streamReportContent } from '../api.js'
+import { exportReport, generateToc, getReportTemplates, streamReportContent } from '../api.js'
 
 const criteriaRef = ref(null)
 const criteria = ref({})
@@ -73,6 +76,20 @@ const banner = ref('')
 const phase = ref('idle') // idle | toc | generating | done
 const toc = ref({ title: '', sections: [] })
 const leaves = ref([]) // [{name, status, content, references, error}]
+
+// 표준 템플릿 (서식 표본 — 기본값: 첫 템플릿)
+const templates = ref([])
+const selectedTemplate = ref('')
+
+onMounted(async () => {
+  try {
+    const data = await getReportTemplates()
+    templates.value = data.templates || []
+    if (templates.value.length) selectedTemplate.value = templates.value[0].id
+  } catch {
+    // 템플릿 목록 실패는 치명적이지 않음 — 기본(무서식) 내보내기로 동작
+  }
+})
 
 // 생성/작성 요청 감지 키워드 (지시 5 — LLM 분류 없이 휴리스틱)
 const TRIGGER_RE = /(작성|생성|만들|초안|목차)/
@@ -222,11 +239,24 @@ function attachContents(nodes, queue) {
   })
 }
 
+/** 부제 줄: "서면 보고 / {보고일시 — 미입력 시 오늘} / {역할}" */
+function composeSubtitle() {
+  const bg = criteria.value.backgroundInfo || {}
+  const role = (criteria.value.purposeOfDocument || {}).role || ''
+  const dt = bg.reportTime ? new Date(bg.reportTime) : new Date()
+  const days = ['일', '월', '화', '수', '목', '금', '토']
+  const dateText = `${dt.getFullYear()}. ${dt.getMonth() + 1}. ${dt.getDate()}.(${days[dt.getDay()]})`
+  return ['서면 보고', dateText, role].filter(Boolean).join(' / ')
+}
+
 async function doExport(format) {
   banner.value = ''
   try {
     const tree = attachContents(toc.value.sections, [...leaves.value])
-    const { blob, filename } = await exportReport(toc.value.title, tree, format)
+    const { blob, filename } = await exportReport(toc.value.title, tree, format, {
+      template: selectedTemplate.value,
+      subtitle: selectedTemplate.value ? composeSubtitle() : '',
+    })
     const url = URL.createObjectURL(blob)
     const a = document.createElement('a')
     a.href = url

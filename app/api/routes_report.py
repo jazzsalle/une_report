@@ -25,6 +25,7 @@ from app.services.report_builder import (
     build_report_hwpx,
     flatten_leaf_names,
 )
+from app.services.report_template import TemplateError, list_templates, load_template_styles
 
 router = APIRouter(prefix="/report", tags=["report"])
 
@@ -50,8 +51,10 @@ class ContentRequest(BaseModel):
 
 class ExportRequest(BaseModel):
     title: str = ""
+    subtitle: str = ""       # 부제 줄 ("서면 보고 / 보고일시 / 역할") — 템플릿 사용 시 표기
     sections: list[dict]
-    format: str = "hwpx"  # hwpx | docx
+    format: str = "hwpx"     # hwpx | docx
+    template: str = ""       # 표준 템플릿 id (templates/*.hwpx stem) — 빈 값이면 기본 조립
 
 
 def get_report_client() -> T3qReportClient:
@@ -143,9 +146,18 @@ async def generate_content(
     )
 
 
+@router.get("/templates")
+async def get_templates():
+    """표준 템플릿 목록 (templates/*.hwpx) — UI 선택지."""
+    return {"templates": list_templates()}
+
+
 @router.post("/export")
 async def export_report(body: ExportRequest):
-    """내용이 채워진 목차 트리를 hwpx/docx 파일로 조립해 반환한다."""
+    """내용이 채워진 목차 트리를 hwpx/docx 파일로 조립해 반환한다.
+
+    template 지정 시 hwpx는 템플릿 서식 조립, docx는 템플릿 스타일 근사 적용.
+    """
     if body.format not in ("hwpx", "docx"):
         raise HTTPException(status_code=400, detail=f"지원하지 않는 형식: {body.format}")
     if not body.sections:
@@ -156,12 +168,22 @@ async def export_report(body: ExportRequest):
     ).strip() or "재난안전계획서"
     out_dir = config.FILES_DIR / "reports" / uuid.uuid4().hex
     out_path = out_dir / f"{safe_title}.{body.format}"
-    if body.format == "hwpx":
-        build_report_hwpx(body.title, body.sections, out_path)
-        media = "application/octet-stream"
-    else:
-        build_report_docx(body.title, body.sections, out_path)
-        media = (
-            "application/vnd.openxmlformats-officedocument.wordprocessingml.document"
-        )
+    try:
+        if body.format == "hwpx":
+            build_report_hwpx(
+                body.title, body.sections, out_path,
+                subtitle=body.subtitle, template_id=body.template or None,
+            )
+            media = "application/octet-stream"
+        else:
+            styles = load_template_styles(body.template) if body.template else None
+            build_report_docx(
+                body.title, body.sections, out_path,
+                subtitle=body.subtitle, template_styles=styles,
+            )
+            media = (
+                "application/vnd.openxmlformats-officedocument.wordprocessingml.document"
+            )
+    except TemplateError as e:
+        raise HTTPException(status_code=400, detail=str(e))
     return FileResponse(out_path, media_type=media, filename=out_path.name)

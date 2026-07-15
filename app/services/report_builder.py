@@ -13,7 +13,8 @@ import re
 from pathlib import Path
 
 from docx import Document
-from docx.shared import Mm
+from docx.enum.text import WD_ALIGN_PARAGRAPH
+from docx.shared import Mm, Pt
 from hwpx.document import HwpxDocument
 
 from app.core.hwpx.models import HWP_UNITS_PER_MM
@@ -134,18 +135,37 @@ def _walk_sections(sections: list[dict], emit_heading, emit_para, emit_table, de
         _walk_sections(node.get("children") or [], emit_heading, emit_para, emit_table, depth + 1)
 
 
-def build_report_hwpx(title: str, sections: list[dict], output_path: str | Path) -> None:
+def build_report_hwpx(
+    title: str,
+    sections: list[dict],
+    output_path: str | Path,
+    *,
+    subtitle: str = "",
+    template_id: str | None = None,
+) -> None:
     """목차 트리(내용 포함)를 hwpx 문서로 조립한다.
 
-    build_hwpx(spec)는 문단·표를 그룹으로만 받아 섹션 순서를 못 지키므로,
-    HwpxDocument에 직접 순서대로 쓴다 (서식 수준은 텍스트 문단 — 1차 범위).
+    template_id가 있으면 표준 템플릿(서식 표본) 기반으로 조립하고
+    (report_template.assemble_hwpx — 제목·헤딩·개조식·표 서식 보존),
+    없으면 기본 골격(HwpxDocument.new)에 순서대로 쓴다 (폴백 경로 유지).
     """
+    if template_id:
+        from app.services.report_template import assemble_hwpx
+
+        assemble_hwpx(
+            template_id, title, subtitle, sections, output_path,
+            table_width_mm=TABLE_WIDTH_MM,
+        )
+        return
+
     output_path = Path(output_path)
     output_path.parent.mkdir(parents=True, exist_ok=True)
     doc = HwpxDocument.new()
     try:
         if title:
             doc.add_paragraph(str(title))
+        if subtitle:
+            doc.add_paragraph(str(subtitle))
 
         def _table(rows: list[list[str]]) -> None:
             if not rows:
@@ -172,13 +192,70 @@ def build_report_hwpx(title: str, sections: list[dict], output_path: str | Path)
         doc.close()
 
 
-def build_report_docx(title: str, sections: list[dict], output_path: str | Path) -> None:
-    """목차 트리(내용 포함)를 docx 문서로 조립한다 (헤딩 레벨 반영)."""
+def build_report_docx(
+    title: str,
+    sections: list[dict],
+    output_path: str | Path,
+    *,
+    subtitle: str = "",
+    template_styles: dict | None = None,
+) -> None:
+    """목차 트리(내용 포함)를 docx 문서로 조립한다.
+
+    template_styles(report_template.load_template_styles 산출)가 있으면
+    템플릿 서식을 근사 적용한다 — 글꼴 크기·굵기·가운데 정렬·들여쓰기.
+    없으면 기본 Heading 스타일 (기존 동작).
+    """
     output_path = Path(output_path)
     output_path.parent.mkdir(parents=True, exist_ok=True)
     doc = Document()
-    if title:
-        doc.add_heading(str(title), level=0)
+
+    def _styled_para(text: str, style_key: str, *, indent_override_mm: float | None = None):
+        """템플릿 스타일 dict를 근사 적용한 문단을 만든다."""
+        p = doc.add_paragraph()
+        run = p.add_run(text)
+        st = (template_styles or {}).get(style_key) or {}
+        if st:
+            run.font.size = Pt(st.get("size_pt") or 10)
+            run.bold = bool(st.get("bold"))
+            if st.get("center"):
+                p.alignment = WD_ALIGN_PARAGRAPH.CENTER
+            indent_mm = st.get("indent_mm") if indent_override_mm is None else indent_override_mm
+            if indent_mm:
+                p.paragraph_format.left_indent = Mm(indent_mm)
+        return p
+
+    if template_styles:
+        if title:
+            _styled_para(str(title), "title")
+        if subtitle:
+            _styled_para(str(subtitle), "subtitle")
+
+        def _emit_heading(name: str, depth: int) -> None:
+            _styled_para(name, "heading1" if depth == 0 else "heading2")
+
+        def _emit_para(text: str) -> None:
+            stripped = text.strip()
+            if stripped.startswith("○"):
+                _styled_para(stripped, "bullet1")
+            elif stripped.startswith(("-", "–", "—", "―", "ㆍ", "·", "※")):
+                _styled_para(stripped, "bullet2")
+            else:
+                # 마커 없는 서술 문단은 개조식1 크기에 들여쓰기 없이
+                _styled_para(stripped, "bullet1", indent_override_mm=0)
+    else:
+        if title:
+            doc.add_heading(str(title), level=0)
+        if subtitle:
+            doc.add_paragraph(str(subtitle))
+
+        def _emit_heading(name: str, depth: int) -> None:
+            doc.add_heading(name, level=min(depth + 1, 9))
+
+        def _emit_para(text: str) -> None:
+            doc.add_paragraph(text)
+
+    cell_size_pt = ((template_styles or {}).get("cell") or {}).get("size_pt")
 
     def _table(rows: list[list[str]]) -> None:
         if not rows:
@@ -198,11 +275,15 @@ def build_report_docx(title: str, sections: list[dict], output_path: str | Path)
                 cell = table.cell(r, c)
                 cell.width = col_width
                 cell.text = str(value)
+                if cell_size_pt:
+                    for para in cell.paragraphs:
+                        for run in para.runs:
+                            run.font.size = Pt(cell_size_pt)
 
     _walk_sections(
         sections,
-        emit_heading=lambda name, d: doc.add_heading(name, level=min(d + 1, 9)),
-        emit_para=lambda text: doc.add_paragraph(text),
+        emit_heading=_emit_heading,
+        emit_para=_emit_para,
         emit_table=_table,
     )
     doc.save(str(output_path))
