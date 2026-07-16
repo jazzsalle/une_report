@@ -1,7 +1,7 @@
 # PROGRESS
 
 ## Last updated
-2026-07-14
+2026-07-16 (회사 PC 세션 종료 — 집에서 이어서 작업)
 
 ## Current goal
 **T3Q 재난안전계획서 생성 도구 전환** (`upgrade/업그레이드 지시사항.txt`,
@@ -29,8 +29,26 @@
 - ⚠ **인증서 이슈**: cadm-ca.crt는 UNE 자체 CA — T3Q 서버(발급자 *.t3q.ai) 검증 불가.
   `.env T3Q_TLS_VERIFY=false` 임시 우회 중. 담당(swpark@unes.co.kr)에 올바른 CA 확인 필요
 
+## Done (2026-07-15~16 추가)
+- **표 열폭 160mm 균등 + 새 개요기호마다 줄바꿈** (b5c68d3): report_builder + numbering
+  (starts_with_marker/split_outline_runs — 숫자·한글 마커는 날짜 오탐 방지로 줄 시작만)
+- **표준 템플릿 서식 적용** (5c6940a): `templates/` + `report_template.py` —
+  규약 기반 표본 인식(p0 제목/p1 부제/1.헤딩/가.헤딩/○·- 개조식/빈 표), 템플릿 패키지
+  기반 조립(secPr 보존·lineseg 제거·표 리사이즈 160mm·빈 셀 t 생성), docx 근사,
+  GET /report/templates + export template·subtitle, ReportView 서식 셀렉트.
+  규약: docs/t3q_upgrade_design.md 부록 A. 실서버 내보내기 스모크 OK
+
 ## In progress
-- 없음
+- **⚠ 신규 템플릿 3종 규약 불일치** — 사용자가 templates/에 추가한
+  `기본 템플릿_01/02`, `태풍 상황보고 템플릿`은 현행 표본 규약(1./가./○/-)과 다른 구조:
+  - 제목이 **표 박스** 안에 있음 (표0(0,0)="[문서 주제]")
+  - 마커 체계가 □(목차)/ㅇ(본문)/-(세부)/*(출처) + "[목차 레벨]"·"[본문 레벨]" 라벨
+  - 표 표본에 **표제목(헤더행)/표내용 서식 구분** 있음
+  - 태풍 상황보고는 실제 작성 문서 그대로 (표본 문서 아님)
+  → 목록에는 나오지만 **내보내기 선택 시 TemplateError(400)**. `AI 행정문서 템플릿`만 동작.
+  다음 작업: 인식기를 이 구조(제목 박스·□/ㅇ/-/* 마커·헤더행 표)까지 확장하거나,
+  템플릿을 규약에 맞게 수정하거나 — 사용자와 방향 결정 필요.
+  (템플릿2는 templates/에서 제거됨 — 원본은 ouputs/에 보관)
 
 ## Next steps
 1. 브라우저 육안 확인: 생성 도구 전체 플로우 (기준정보→목차→본문 스트리밍→내보내기)

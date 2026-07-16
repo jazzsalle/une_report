@@ -17,7 +17,6 @@ from app.services.report_template import (
 )
 
 TPL1 = "AI 행정문서 템플릿"
-TPL2 = "AI 행정문서 템플릿2"
 
 SECTIONS = [
     {"name": "1. 추진 배경", "content": "", "references": [], "children": [
@@ -48,19 +47,17 @@ def _parse_out(out: Path, tmp_path: Path):
 class TestListAndRecognize:
     def test_list_templates_reports_table_capability(self):
         items = {t["id"]: t for t in list_templates()}
-        assert TPL1 in items and TPL2 in items
+        assert TPL1 in items
         assert items[TPL1]["has_table"] is True
-        assert items[TPL2]["has_table"] is False
 
-    @pytest.mark.parametrize("tpl", [TPL1, TPL2])
-    def test_exemplars_recognized(self, tpl, tmp_path):
+    def test_exemplars_recognized(self, tmp_path):
         extract_dir = tmp_path / "t"
-        extract_hwpx(template_path(tpl), extract_dir)
+        extract_hwpx(template_path(TPL1), extract_dir)
         root = ET.parse(find_section_files(extract_dir)[0]).getroot()
         ex = _find_exemplars(root)
         for key in ("title", "subtitle", "heading1", "heading2", "bullet1", "bullet2"):
             assert ex[key] is not None, key
-        assert (ex["table_host"] is not None) == (tpl == TPL1)
+        assert ex["table_host"] is not None
         # 개조식 들여쓰기 접두가 보존된다
         assert ex["bullet1"].indent and ex["bullet2"].indent
         assert len(ex["bullet2"].indent) > len(ex["bullet1"].indent)
@@ -118,10 +115,30 @@ class TestAssembleHwpx:
         assert all(w == widths[0] for w in widths)
         assert abs(sum(widths) - TABLE_WIDTH_MM) <= 2
 
-    def test_template2_without_table_exemplar_falls_back_to_text(self, tmp_path):
-        """표 표본이 없는 템플릿2는 표를 텍스트 행으로 보존한다 (데이터 유실 없음)."""
-        out = tmp_path / "tpl2.hwpx"
-        build_report_hwpx("표 없는 템플릿", SECTIONS, out, template_id=TPL2)
+    def test_template_without_table_exemplar_falls_back_to_text(self, tmp_path, monkeypatch):
+        """표 표본이 없는 템플릿은 표를 텍스트 행으로 보존한다 (데이터 유실 없음).
+
+        규약을 지키되 표가 없는 합성 템플릿을 만들어 검증한다
+        (실물 템플릿 구성이 바뀌어도 이 폴백 계약은 유지돼야 한다).
+        """
+        from app.core.hwpx import build_hwpx
+
+        tdir = tmp_path / "templates"
+        tdir.mkdir()
+        build_hwpx({
+            "title": "합성 템플릿 제목",
+            "paragraphs": [
+                "서면 보고 / 2026. 1. 1.(목) / 담당자",
+                "1. 헤딩 표본",
+                "가. 소헤딩 표본",
+                "○ 개조식 표본",
+                "- 세부 표본",
+            ],
+        }, tdir / "표없는합성.hwpx")
+        monkeypatch.setattr(config, "REPORT_TEMPLATES_DIR", tdir)
+
+        out = tmp_path / "no_table.hwpx"
+        build_report_hwpx("표 없는 템플릿", SECTIONS, out, template_id="표없는합성")
         assert validate_hwpx(out).ok
         nodes, *_ = _parse_out(out, tmp_path)
         texts = [n.text for n in nodes]
