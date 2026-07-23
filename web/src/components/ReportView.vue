@@ -78,9 +78,22 @@ const progressText = computed(() => {
   return props.busy ? `생성 중 ${done}/${props.leaves.length}` : `${done}/${props.leaves.length} 완료`
 })
 
-/** 섹션 마크다운(표 포함) → HTML. 반드시 DOMPurify를 거친다. */
+/** 개요기호(□·○·ㅇ·-·※·* 등) 앞에서 항상 줄을 나눈다 — 문서 조립
+ *  (app/services/numbering.split_outline_runs)과 같은 규칙. 표 행(|…)은 제외 */
+const OUTLINE_BREAK_RE =
+  /(?<=[\s.)\]!?])(?=[①-⑳㉠-㉻□■◇◆○●◎◦ㆍ·•※]|[-–—―]\s|ㅇ\s|\*\s|\(\d{1,2}\)\s|\([가-하]\)\s|\d{1,2}\)\s)/g
+
+function withOutlineBreaks(text) {
+  return text
+    .split('\n')
+    .map((line) => (line.trimStart().startsWith('|') ? line : line.replace(OUTLINE_BREAK_RE, '\n')))
+    .join('\n')
+}
+
+/** 섹션 마크다운(표 포함) → HTML. 반드시 DOMPurify를 거친다.
+ *  breaks: true — 개요기호 문장마다 <br>로 줄바꿈해 표시한다 */
 function renderMarkdown(text) {
   if (!text) return ''
-  return DOMPurify.sanitize(marked.parse(text, { async: false }))
+  return DOMPurify.sanitize(marked.parse(withOutlineBreaks(text), { async: false, breaks: true }))
 }
 </script>

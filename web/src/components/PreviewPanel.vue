@@ -52,20 +52,24 @@ function render() {
   applyHighlights()
 }
 
-/** changed_ids에 해당하는 요소에 .highlight를 부여하고 첫 요소로 스크롤 */
+/** changed_ids 요소에 교체 표시를 부여하고 첫 요소로 스크롤.
+ *  .changed = 교체된 내용 빨간 글자 (다음 편집/문서 갱신까지 유지),
+ *  .highlight = 일회성 노란 플래시 (위치 안내용) */
 function applyHighlights() {
   const el = containerRef.value
-  if (!el || props.changedIds.length === 0) return
+  if (!el) return
+  el.querySelectorAll('.changed').forEach((n) => n.classList.remove('changed'))
+  if (props.changedIds.length === 0) return
   if (highlightTimer) clearTimeout(highlightTimer)
   let first = null
   for (const id of props.changedIds) {
     const target = el.querySelector(`[data-id="${CSS.escape(String(id))}"]`)
     if (!target) continue
-    target.classList.add('highlight')
+    target.classList.add('changed', 'highlight')
     if (!first) first = target
   }
   if (first) first.scrollIntoView({ behavior: 'smooth', block: 'center' })
-  // 애니메이션 종료 후 클래스 제거 → 다음 갱신 때 다시 발동 가능
+  // 플래시 애니메이션 종료 후 클래스 제거 → 다음 갱신 때 다시 발동 가능 (.changed는 유지)
   highlightTimer = setTimeout(() => {
     el.querySelectorAll('.highlight').forEach((n) => n.classList.remove('highlight'))
   }, 2500)

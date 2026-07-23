@@ -169,6 +169,13 @@ button:disabled { opacity: 0.55; cursor: not-allowed; }
 .preview-doc .highlight {
   animation: highlight-fade 2.4s ease-out forwards;
 }
+
+/* 직전 편집으로 교체된 내용: 빨간 글자 (다음 편집·문서 갱신까지 유지).
+   서버 HTML의 .chN 색상 규칙을 덮어야 하므로 !important + 하위 전파 */
+.preview-doc .changed,
+.preview-doc .changed * {
+  color: #dc2626 !important;
+}
 @keyframes highlight-fade {
   0% { background-color: #fde047; }
   60% { background-color: #fef9c3; }
@@ -317,9 +324,16 @@ button:disabled { opacity: 0.55; cursor: not-allowed; }
 .report-status[data-status="error"] { background: #fef2f2; color: #b91c1c; }
 .report-section-error { color: #b91c1c; font-size: 13px; }
 .report-section-body { line-height: 1.7; }
-.report-section-body.markdown table { border-collapse: collapse; margin: 8px 0; }
+.report-section-body.markdown table {
+  border-collapse: collapse;
+  margin: 8px auto;        /* 가운데 정렬 */
+  width: 100%;             /* 뷰 전체 폭 채움 */
+  table-layout: fixed;     /* 열폭 균등 분배 — 내보내기(160mm 등분)와 동일 규칙 */
+}
 .report-section-body.markdown th, .report-section-body.markdown td {
-  border: 1px solid #cbd5e1; padding: 4px 10px;
+  border: 1px solid #cbd5e1;
+  padding: 4px 10px;
+  overflow-wrap: break-word;  /* fixed 레이아웃에서 긴 셀 내용 넘침 방지 */
 }
 .report-refs {
   margin: 8px 0 0;

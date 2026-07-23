@@ -17,6 +17,8 @@ from app.services.report_template import (
 )
 
 TPL1 = "AI 행정문서 템플릿"
+# 표 제목형 + □/ㅇ 개요기호 템플릿 (제목이 p0 표 안에 있다)
+TPLS_TABLE_TITLE = ["기본 템플릿_01", "기본 템플릿_02", "태풍 상황보고 템플릿"]
 
 SECTIONS = [
     {"name": "1. 추진 배경", "content": "", "references": [], "children": [
@@ -61,6 +63,96 @@ class TestListAndRecognize:
         # 개조식 들여쓰기 접두가 보존된다
         assert ex["bullet1"].indent and ex["bullet2"].indent
         assert len(ex["bullet2"].indent) > len(ex["bullet1"].indent)
+
+
+class TestTableTitleTemplates:
+    """□/ㅇ 개요기호 + 표 안 제목 구조 템플릿 (기본 템플릿_01·02, 태풍 상황보고)."""
+
+    @staticmethod
+    def _installed(tpl: str) -> bool:
+        return Path(config.REPORT_TEMPLATES_DIR, f"{tpl}.hwpx").is_file()
+
+    @pytest.mark.parametrize("tpl", TPLS_TABLE_TITLE)
+    def test_exemplars_recognized_with_fallbacks(self, tmp_path, tpl):
+        if not self._installed(tpl):
+            pytest.skip(f"{tpl} 미설치")
+        extract_dir = tmp_path / "t"
+        extract_hwpx(template_path(tpl), extract_dir)
+        root = ET.parse(find_section_files(extract_dir)[0]).getroot()
+        ex = _find_exemplars(root)
+        assert ex["title_in_table"] is True
+        for key in ("title", "subtitle", "heading1", "heading2", "bullet1", "bullet2"):
+            assert ex[key] is not None, key
+        assert ex["table_host"] is not None
+        # 데이터 표(행 2개 이상)가 표본으로 뽑혀야 한다 — 제목·헤딩 상자 표가 아니라
+        from app.services.report_template import _hosted_tbl
+        trs = [c for c in _hosted_tbl(ex["table_host"].elem) if tag(c) == "tr"]
+        assert len(trs) >= 2
+
+    @pytest.mark.parametrize("tpl", TPLS_TABLE_TITLE)
+    def test_assemble_places_title_and_centers_tables(self, tmp_path, tpl):
+        if not self._installed(tpl):
+            pytest.skip(f"{tpl} 미설치")
+        out = tmp_path / f"{tpl}.hwpx"
+        build_report_hwpx(
+            "코로나19 재유행 대비계획", SECTIONS, out,
+            subtitle="서면 보고 / 2026. 7. 21.(월) / 담당자", template_id=tpl,
+        )
+        assert validate_hwpx(out).ok
+
+        extract_dir = tmp_path / f"x_{tpl}"
+        extract_hwpx(out, extract_dir)
+        root = ET.parse(find_section_files(extract_dir)[0]).getroot()
+        header = ET.parse(extract_dir / "Contents" / "header.xml").getroot()
+        para_prs = {e.get("id"): e for e in header.iter() if tag(e) == "paraPr"}
+
+        def align_of(pid):
+            pp = para_prs.get(pid or "")
+            al = next((c for c in pp if tag(c) == "align"), None) if pp is not None else None
+            return al.get("horizontal") if al is not None else None
+
+        from app.services.report_template import _hosted_tbl
+        tops = [p for p in root if tag(p) == "p"]
+
+        def cell_texts(tbl):
+            return [
+                "".join(t.text or "" for t in tc.iter() if tag(t) == "t")
+                for tc in tbl.iter() if tag(tc) == "tc"
+            ]
+
+        # 제목·부제가 p0 제목 표 셀에 기입된다
+        title_tbl = _hosted_tbl(tops[0])
+        assert title_tbl is not None
+        joined = " ".join(cell_texts(title_tbl))
+        assert "코로나19 재유행 대비계획" in joined
+        assert "서면 보고" in joined
+
+        # 본문 개요기호 문단이 조립된다 (□/ㅇ 체계 폴백 포함)
+        body_text = "\n".join(
+            "".join(t.text or "" for r in p if tag(r) == "run" for t in r if tag(t) == "t")
+            for p in tops
+        )
+        assert "1. 추진 배경" in body_text
+        assert "가. 계획 수립 근거" in body_text
+
+        # 데이터 표는 가운데 정렬 + 전 셀 문단 CENTER
+        data = next(
+            (p for p in tops if _hosted_tbl(p) is not None and "100" in cell_texts(_hosted_tbl(p))),
+            None,
+        )
+        assert data is not None, "데이터 표가 조립되지 않았다"
+        tbl = _hosted_tbl(data)
+        pos = next(e for e in tbl if tag(e) == "pos")
+        if pos.get("treatAsChar") == "1":
+            assert align_of(data.get("paraPrIDRef")) == "CENTER"
+        else:
+            assert pos.get("horzAlign") == "CENTER"
+        cell_aligns = {
+            align_of(q.get("paraPrIDRef"))
+            for tc in tbl.iter() if tag(tc) == "tc"
+            for q in tc.iter() if tag(q) == "p"
+        }
+        assert cell_aligns == {"CENTER"}
 
 
 class TestAssembleHwpx:

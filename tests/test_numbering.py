@@ -6,6 +6,8 @@ from app.services.numbering import (
     STANDARD_LEVELS,
     build_numbering_rule,
     detect_item_scheme,
+    split_outline_runs,
+    starts_with_marker,
 )
 
 
@@ -52,6 +54,43 @@ class TestDetectItemScheme:
     def test_empty_nodes(self):
         assert detect_item_scheme([]) == []
         assert detect_item_scheme(_nodes("", "  ")) == []
+
+
+class TestSplitOutlineRuns:
+    """개요기호 문장 사이 강제 줄바꿈 — T3Q 응답이 구분자 없이 이어지는 경우."""
+
+    def test_splits_at_each_inline_marker(self):
+        assert split_outline_runs("○ 첫 항목 ○ 둘째 항목") == ["○ 첫 항목", "○ 둘째 항목"]
+
+    def test_splits_ieung_and_source_markers(self):
+        text = (
+            "□ 발생 개요 ㅇ 주간 확진자 88% 증가 - 전주 대비 "
+            "※ 출처: 질병관리청 * [출처] 변이 비율 6.7%"
+        )
+        assert split_outline_runs(text) == [
+            "□ 발생 개요",
+            "ㅇ 주간 확진자 88% 증가",
+            "- 전주 대비",
+            "※ 출처: 질병관리청",
+            "* [출처] 변이 비율 6.7%",
+        ]
+
+    def test_splits_after_sentence_end_without_space(self):
+        """마커 앞에 공백 없이 문장이 끝나는 경우도 분리한다."""
+        assert split_outline_runs("ㅇ 상황이 관리되고 있다.○ 후속 조치를 추진한다") == [
+            "ㅇ 상황이 관리되고 있다.",
+            "○ 후속 조치를 추진한다",
+        ]
+
+    def test_does_not_split_dates_decimals_bold(self):
+        text = "ㅇ 2026. 7. 21. 기준 -30.0% 감소, **중요** 사항 유지"
+        assert split_outline_runs(text) == [text]
+
+    def test_source_line_start_markers_recognized(self):
+        """※·* 로 시작하는 줄은 새 문단으로 인식된다 (markdown_blocks 병합 방지)."""
+        assert starts_with_marker("※ 출처: 질병관리청")
+        assert starts_with_marker("* [출처] 변이 비율")
+        assert not starts_with_marker("**굵게** 시작 문장")
 
 
 class TestBuildNumberingRule:
