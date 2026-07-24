@@ -1,13 +1,15 @@
 <template>
   <div class="criteria-panel">
-    <div class="criteria-head">
-      <span class="criteria-title">기준정보 입력</span>
+    <div class="panel-head">
+      <span class="panel-title">기준정보 입력</span>
       <span class="criteria-hint">* 필수</span>
+      <span class="topbar-spacer"></span>
+      <button type="button" class="icon-btn" title="패널 접기" @click="$emit('collapse')">«</button>
     </div>
     <div class="criteria-scroll">
       <!-- 문서 주제 (subject) -->
       <label class="field">
-        <span class="field-label">문서 주제 (subject) *</span>
+        <span class="field-label">문서 주제 (subject) <span class="field-required">*</span></span>
         <input v-model.trim="form.subject" type="text" placeholder="예) 2026년 코로나19 재유행 대비계획" />
       </label>
 
@@ -15,14 +17,14 @@
       <fieldset class="field-group">
         <legend>배경정보 (backgroundInfo)</legend>
         <label class="field">
-          <span class="field-label">재난유형 (disasterType) *</span>
+          <span class="field-label">재난유형 (disasterType) <span class="field-required">*</span></span>
           <select v-model="form.disasterType">
             <option value="" disabled>선택</option>
             <option v-for="t in DISASTER_TYPES" :key="t" :value="t">{{ t }}</option>
           </select>
         </label>
         <label class="field">
-          <span class="field-label">재난관리단계 (controlPhase) *</span>
+          <span class="field-label">재난관리단계 (controlPhase) <span class="field-required">*</span></span>
           <select v-model="form.controlPhase">
             <option value="" disabled>선택</option>
             <option v-for="p in CONTROL_PHASES" :key="p" :value="p">{{ p }}</option>
@@ -109,14 +111,14 @@
       <fieldset class="field-group">
         <legend>문서 작성 목적 (purposeOfDocument)</legend>
         <label class="field">
-          <span class="field-label">업무 목적 (goalOfBusiness) *</span>
+          <span class="field-label">업무 목적 (goalOfBusiness) <span class="field-required">*</span></span>
           <select v-model="form.goalOfBusiness">
             <option value="" disabled>선택</option>
             <option value="재난안전계획서 작성">재난안전계획서 작성</option>
           </select>
         </label>
         <label class="field">
-          <span class="field-label">역할 (role) *</span>
+          <span class="field-label">역할 (role) <span class="field-required">*</span></span>
           <select v-model="form.role">
             <option value="" disabled>선택</option>
             <option value="재난안전계획 수립 담당자">재난안전계획 수립 담당자</option>
@@ -124,7 +126,7 @@
           </select>
         </label>
         <div class="field">
-          <span class="field-label">타깃 독자 (targetAudiences, 복수) *</span>
+          <span class="field-label">타깃 독자 (targetAudiences, 복수) <span class="field-required">*</span></span>
           <div class="check-row">
             <label v-for="a in AUDIENCES" :key="a" class="check-item">
               <input v-model="form.targetAudiences" type="checkbox" :value="a" /> {{ a }}
@@ -153,7 +155,7 @@ const DISASTER_TYPES = [
 const CONTROL_PHASES = ['예방', '대비']
 const AUDIENCES = ['중앙정부', '지자체', '내부보고', '대민']
 
-const emit = defineEmits(['update:criteria', 'update:missing'])
+const emit = defineEmits(['update:criteria', 'update:missing', 'collapse'])
 
 const form = reactive({
   subject: '',

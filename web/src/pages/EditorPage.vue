@@ -1,61 +1,60 @@
 <template>
-  <!-- hwpx 편집 모드 (기존 기능 유지 — 로그인만 제거) -->
+  <!-- hwpx 편집 모드 (기존 기능 유지 — 로그인만 제거). 2분할: 채팅 360px | 미리보기 flex -->
   <div class="editor-page">
-    <div class="editor-toolbar">
-      <button type="button" :disabled="uploading" @click="fileInput?.click()">
-        {{ uploading ? '업로드 중…' : 'hwpx 업로드' }}
-      </button>
-      <input
-        ref="fileInput"
-        type="file"
-        accept=".hwpx"
-        class="hidden-input"
-        @change="onFileChange"
-      />
-      <span class="doc-title">{{ doc ? doc.title : '열린 문서 없음' }}</span>
-      <span class="topbar-spacer"></span>
-      <button type="button" :disabled="!doc || exporting" @click="download">
-        {{ exporting ? '내보내는 중…' : 'hwpx 다운로드' }}
-      </button>
-    </div>
-
     <div v-if="banner" class="banner-error">
       {{ banner }}
-      <button type="button" class="ghost-btn" @click="banner = ''">닫기</button>
+      <button type="button" class="link-btn" @click="banner = ''">닫기</button>
     </div>
 
-    <div ref="mainRef" class="main-split">
-      <section class="chat-pane" :style="{ width: leftPct + '%' }">
+    <input
+      ref="fileInput"
+      type="file"
+      accept=".hwpx"
+      class="hidden-input"
+      @change="onFileChange"
+    />
+
+    <div class="main-split">
+      <section class="chat-pane">
         <ChatPanel
           :messages="messages"
           :sending="sending"
           :status-text="statusText"
+          empty-text='문서를 업로드하고 편집·질문 지시를 입력하세요.
+예) "과제명을 ○○로 수정해줘"
+미리보기에서 문단·셀을 클릭하면 해당 요소만 편집합니다.'
           @send="sendMessage"
         />
       </section>
-      <div
-        class="divider"
-        role="separator"
-        aria-orientation="vertical"
-        @mousedown.prevent="startDrag"
-      ></div>
       <section class="preview-pane">
         <PreviewPanel
           :html="previewHtml"
           :changed-ids="changedIds"
           :selected-ids="selectedIds"
+          :title="doc ? doc.title : ''"
           :page-count="doc ? doc.pages : 0"
           :version="doc ? doc.version : 0"
+          :has-doc="!!doc"
+          :uploading="uploading"
+          :exporting="exporting"
           @toggle-select="toggleSelect"
           @clear-selection="selectedIds = []"
+          @upload="fileInput?.click()"
+          @download="download"
         />
       </section>
+    </div>
+
+    <!-- 다운로드 완료 토스트 (3.2초 자동 숨김) -->
+    <div v-if="toast" class="toast">
+      <span class="toast-dot"></span>
+      {{ toast }}
     </div>
   </div>
 </template>
 
 <script setup>
-import { onMounted, ref } from 'vue'
+import { onBeforeUnmount, onMounted, ref } from 'vue'
 import ChatPanel from '../components/ChatPanel.vue'
 import PreviewPanel from '../components/PreviewPanel.vue'
 import {
@@ -85,6 +84,16 @@ const banner = ref('')
 const uploading = ref(false)
 const exporting = ref(false)
 const fileInput = ref(null)
+
+// 다운로드 완료 토스트
+const toast = ref('')
+let toastTimer = null
+function showToast(msg) {
+  toast.value = msg
+  if (toastTimer) clearTimeout(toastTimer)
+  toastTimer = setTimeout(() => { toast.value = '' }, 3200)
+}
+onBeforeUnmount(() => { if (toastTimer) clearTimeout(toastTimer) })
 
 const INTENT_LABEL = { edit: '문서 편집 중', fill: '내용 작성 중', query: '답변 생성 중' }
 
@@ -186,6 +195,7 @@ async function download() {
     a.click()
     a.remove()
     URL.revokeObjectURL(url)
+    showToast(`"${filename}" 다운로드를 시작했습니다 (원본 서식 보존 재패키징).`)
   } catch (err) {
     banner.value = `다운로드 실패: ${err.message}`
   } finally {
@@ -268,27 +278,5 @@ async function sendMessage(text) {
   assistant.pending = false
   sending.value = false
   statusText.value = ''
-}
-
-// ---------------------------------------------------------------- divider 드래그
-
-const mainRef = ref(null)
-const leftPct = ref(42)
-
-function startDrag() {
-  const onMove = (e) => {
-    const rect = mainRef.value?.getBoundingClientRect()
-    if (!rect) return
-    const pct = ((e.clientX - rect.left) / rect.width) * 100
-    leftPct.value = Math.min(75, Math.max(20, pct))
-  }
-  const onUp = () => {
-    window.removeEventListener('mousemove', onMove)
-    window.removeEventListener('mouseup', onUp)
-    document.body.classList.remove('dragging')
-  }
-  window.addEventListener('mousemove', onMove)
-  window.addEventListener('mouseup', onUp)
-  document.body.classList.add('dragging')
 }
 </script>

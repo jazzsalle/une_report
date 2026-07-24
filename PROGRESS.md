@@ -1,7 +1,7 @@
 # PROGRESS
 
 ## Last updated
-2026-07-16 (회사 PC 세션 종료 — 집에서 이어서 작업)
+2026-07-24 (회사 PC 세션 종료 — 집에서 이어서 작업)
 
 ## Current goal
 **T3Q 재난안전계획서 생성 도구 전환** (`upgrade/업그레이드 지시사항.txt`,
@@ -38,6 +38,26 @@
   GET /report/templates + export template·subtitle, ReportView 서식 셀렉트.
   규약: docs/t3q_upgrade_design.md 부록 A. 실서버 내보내기 스모크 OK
 
+## Done (2026-07-23~24 추가)
+- **UNE 디자인 시스템 UI 전면 적용** (`design_handoff_une_ui/README.md` 사양, 프론트만 변경):
+  - 토큰·폰트: `web/src/assets/une/`(fig-tokens.css 509변수·typography·fonts.css 경로 수정,
+    Spoqa Han Sans Neo 4종). CDN @import 제거(폐쇄망). 색상 전부 var() — 하드코딩 금지 준수
+  - App: 56px 상단바(une 브랜드·하단 2px 보더 탭)·**다크 모드 스위치**
+    (`data-theme` 토글 + localStorage `une_theme`)
+  - 생성 도구: **4단계 표시줄**(phase 매핑), 330/340/flex 3분할, **기준정보 패널 접기**
+    (44px 레일, v-show로 입력값 보존), 초기 카드, 채팅 스피너 상태바
+  - 본문 뷰: **문서 카드**(800px 중앙·그림자) 리디자인 — 부제(서면 보고/날짜/역할),
+    장 제목(sections 트리 prop 추가), 상태 pill, 개조식 들여쓰기(□0/○16/―30px),
+    표는 marked 유지, 참조 "참조 · 파일명 (p.N)"
+  - hwpx 편집: 업로드/다운로드를 미리보기 툴바로 이동, 대시 업로드 카드,
+    채팅 360px 고정(드래그 분할바 제거 — 디자인 사양), 내보내기 **토스트**(3.2s)
+  - **미리보기 밑판 어긋남 수정** (ouputs/오류사항 화면캡쳐.2png.png): 서버 HTML의
+    자체 `.page`(A4 고정폭·흰 배경·그림자)를 `.preview-doc .page` 오버라이드로 무력화해
+    카드 하나로 통합. 문서 카드는 다크 모드에서도 흰 종이+검정 글자 유지.
+    서버 전역 CSS 누수 차단: body 규칙 무력화 + p/table/td/img를 `:where(.preview-doc)`
+    스코프 (PreviewPanel.scopeInjectedStyles — :where=명시도 0이라 .bfN 우선순위 보존)
+- 빌드 OK. **브라우저 육안 확인은 미완** — 다크 모드·생성 플로우·편집 미리보기 확인 필요
+
 ## In progress
 - **⚠ 신규 템플릿 3종 규약 불일치** — 사용자가 templates/에 추가한
   `기본 템플릿_01/02`, `태풍 상황보고 템플릿`은 현행 표본 규약(1./가./○/-)과 다른 구조:
@@ -51,7 +71,7 @@
   (템플릿2는 templates/에서 제거됨 — 원본은 ouputs/에 보관)
 
 ## Next steps
-1. 브라우저 육안 확인: 생성 도구 전체 플로우 (기준정보→목차→본문 스트리밍→내보내기)
+1. 브라우저 육안 확인: 새 UNE UI 전체 (생성 플로우·hwpx 편집 미리보기 정렬·다크 모드·접이식 패널)
 2. 실서버 본문 스트리밍을 UI로 통과시키는 확인 (`probe_t3q.py content`는 확인됨)
 3. 올바른 T3Q CA 확보 → certs 교체 → `T3Q_TLS_VERIFY=true` 복귀
 4. 내보낸 hwpx 한컴오피스 육안 확인 (`docs/hwpx_validation.md` §3)

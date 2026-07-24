@@ -1,17 +1,39 @@
 <template>
   <div class="preview-panel">
-    <div class="preview-toolbar">
-      <span class="preview-label">문서 미리보기</span>
-      <span v-if="pageCount" class="preview-meta">{{ pageCount }}페이지 · v{{ version }}</span>
-      <span v-if="selectedIds.length" class="preview-selection">
-        선택된 요소 {{ selectedIds.length }}개
-        <button type="button" class="link-btn" @click="$emit('clear-selection')">해제</button>
+    <div class="result-toolbar">
+      <span class="panel-title">미리보기</span>
+      <span class="preview-meta">{{ metaText }}</span>
+      <span v-if="selectedIds.length" class="pill pill-warning">
+        선택: {{ selectedIds.length }}개 요소
       </span>
+      <button
+        v-if="selectedIds.length"
+        type="button"
+        class="link-btn"
+        @click="$emit('clear-selection')"
+      >
+        해제
+      </button>
+      <span class="topbar-spacer"></span>
+      <button type="button" class="btn btn-outline" :disabled="uploading" @click="$emit('upload')">
+        {{ uploading ? '업로드 중…' : 'hwpx 업로드' }}
+      </button>
+      <button
+        type="button"
+        class="btn btn-primary"
+        :disabled="!hasDoc || exporting"
+        @click="$emit('download')"
+      >
+        {{ exporting ? '내보내는 중…' : 'hwpx 다운로드' }}
+      </button>
     </div>
     <div class="preview-scroll">
-      <p v-if="!html" class="preview-empty">
-        상단의 [hwpx 업로드] 버튼으로 문서를 열면 여기에 미리보기가 표시됩니다.
-      </p>
+      <!-- 업로드 전: 대시 보더 카드 (클릭 → 업로드) -->
+      <div v-if="!html" class="upload-card" @click="$emit('upload')">
+        <div class="upload-badge">hwpx</div>
+        <span class="upload-title">hwpx 파일을 업로드하세요</span>
+        <span class="upload-desc">클릭하여 파일 선택 — 원본 서식을 보존한 채 대화로 편집합니다</span>
+      </div>
       <!-- 서버 HTML은 반드시 DOMPurify.sanitize를 거쳐 주입된다 -->
       <div v-show="html" ref="containerRef" class="preview-doc" @click="onClick"></div>
     </div>
@@ -19,17 +41,29 @@
 </template>
 
 <script setup>
-import { onMounted, ref, watch } from 'vue'
+import { computed, onMounted, ref, watch } from 'vue'
 import DOMPurify from 'dompurify'
 
 const props = defineProps({
   html: { type: String, default: '' },
   changedIds: { type: Array, default: () => [] },
   selectedIds: { type: Array, default: () => [] },
+  title: { type: String, default: '' },
   pageCount: { type: Number, default: 0 },
   version: { type: Number, default: 0 },
+  hasDoc: { type: Boolean, default: false },
+  uploading: { type: Boolean, default: false },
+  exporting: { type: Boolean, default: false },
 })
-const emit = defineEmits(['toggle-select', 'clear-selection'])
+const emit = defineEmits(['toggle-select', 'clear-selection', 'upload', 'download'])
+
+const metaText = computed(() => {
+  if (!props.hasDoc) return '업로드된 문서가 없습니다'
+  const parts = [props.title]
+  if (props.pageCount) parts.push(`${props.pageCount}페이지`)
+  parts.push('원본 서식 보존')
+  return parts.filter(Boolean).join(' · ')
+})
 
 const containerRef = ref(null)
 let highlightTimer = null
@@ -48,8 +82,21 @@ function render() {
     ALLOW_DATA_ATTR: true,
     FORCE_BODY: true,
   })
+  scopeInjectedStyles(el)
   applySelection()
   applyHighlights()
+}
+
+/** 서버 HTML의 전역 CSS가 앱으로 새지 않게 스코프한다.
+ *  - body 규칙(회색 캔버스·여백)은 카드(.preview-doc)가 대신하므로 무력화
+ *  - p/table/td/img 요소 규칙은 :where(.preview-doc) 하위로 한정
+ *    (:where는 명시도 0 — .bfN 등 클래스 규칙이 계속 우선하도록 유지) */
+function scopeInjectedStyles(el) {
+  for (const st of el.querySelectorAll('style')) {
+    st.textContent = st.textContent
+      .replace(/(^|\})(\s*)body(\s*\{)/g, '$1$2.hwpx-doc-root-unused$3')
+      .replace(/(^|\})(\s*)(p|table|td|img)(\s*\{)/g, '$1$2:where(.preview-doc) $3$4')
+  }
 }
 
 /** changed_ids 요소에 교체 표시를 부여하고 첫 요소로 스크롤.

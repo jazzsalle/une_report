@@ -1,17 +1,42 @@
 <template>
   <div class="generator-page">
+    <!-- 단계 표시줄: phase(idle/toc/generating/done) → 1~4단계 -->
+    <div class="stepbar">
+      <div
+        v-for="(label, i) in STEPS"
+        :key="label"
+        class="step"
+        :class="{ 'is-active': i === stepIndex, 'is-past': i < stepIndex }"
+      >
+        <span class="step-num">{{ i + 1 }}</span>
+        <span class="step-label">{{ label }}</span>
+        <span v-if="i < STEPS.length - 1" class="step-bar"></span>
+      </div>
+      <span class="topbar-spacer"></span>
+      <span class="stepbar-caption">T3Q 재난안전계획서 API (API-RPT-001 / 002)</span>
+    </div>
+
     <div v-if="banner" class="banner-error">
       {{ banner }}
-      <button type="button" class="ghost-btn" @click="banner = ''">닫기</button>
+      <button type="button" class="link-btn" @click="banner = ''">닫기</button>
     </div>
+
     <div class="generator-split">
-      <!-- 좌: 기준정보 입력 패널 (API 항목명 기반 — 지시 3) -->
-      <section class="criteria-pane">
+      <!-- 좌: 기준정보 입력 패널 (API 항목명 기반 — 지시 3). v-show로 입력값 보존 -->
+      <section v-show="criteriaOpen" class="criteria-pane">
         <CriteriaPanel
           ref="criteriaRef"
           @update:criteria="criteria = $event"
           @update:missing="missing = $event"
+          @collapse="criteriaOpen = false"
         />
+      </section>
+      <!-- 접힘 상태: 44px 세로 레일 -->
+      <section v-show="!criteriaOpen" class="criteria-rail">
+        <button type="button" class="icon-btn" title="기준정보 패널 펼치기" @click="criteriaOpen = true">
+          »
+        </button>
+        <span class="criteria-rail-label">기준정보 입력</span>
       </section>
 
       <!-- 중: 채팅 (생성/작성 요청 → 목차 생성 트리거 — 지시 5) -->
@@ -20,16 +45,23 @@
           :messages="messages"
           :sending="sending"
           :status-text="statusText"
+          empty-text='왼쪽 패널에서 기준정보를 확인·입력한 뒤, "재난안전계획서를 작성해줘"라고 요청하면 목차부터 자동 생성됩니다.'
           @send="sendMessage"
         />
       </section>
 
       <!-- 우: 목차 뷰 ⇄ 본문 뷰 -->
       <section class="gen-result-pane">
-        <p v-if="phase === 'idle'" class="gen-empty">
-          왼쪽에서 기준정보를 입력하고, 채팅창에 "재난안전계획서를 작성해줘"라고
-          요청하면 목차가 생성됩니다.
-        </p>
+        <div v-if="phase === 'idle'" class="gen-empty">
+          <div class="empty-card">
+            <div class="empty-badge">01</div>
+            <span class="empty-title">아직 생성된 문서가 없습니다</span>
+            <p class="empty-desc">
+              왼쪽에서 기준정보를 입력하고, 채팅창에 "재난안전계획서를 작성해줘"라고
+              요청하면 이 영역에 목차가 생성됩니다.
+            </p>
+          </div>
+        </div>
         <TocView
           v-else-if="phase === 'toc'"
           :title="toc.title"
@@ -41,6 +73,8 @@
         <ReportView
           v-else
           :title="toc.title"
+          :subtitle="docSubtitle"
+          :sections="toc.sections"
           :leaves="leaves"
           :busy="phase === 'generating'"
           :templates="templates"
@@ -51,22 +85,31 @@
         />
       </section>
     </div>
+
+    <!-- 내보내기 완료 토스트 (3.2초 자동 숨김) -->
+    <div v-if="toast" class="toast">
+      <span class="toast-dot"></span>
+      {{ toast }}
+    </div>
   </div>
 </template>
 
 <script setup>
 // 재난안전계획서 생성 도구 (T3Q 전환 — docs/t3q_upgrade_design.md §4)
 // 흐름: 기준정보 입력 → (채팅 트리거) 목차 생성 → 목차 편집 → 본문 스트리밍 → 내보내기
-import { onMounted, ref } from 'vue'
+import { computed, onBeforeUnmount, onMounted, ref } from 'vue'
 import ChatPanel from '../components/ChatPanel.vue'
 import CriteriaPanel from '../components/CriteriaPanel.vue'
 import ReportView from '../components/ReportView.vue'
 import TocView from '../components/TocView.vue'
 import { exportReport, generateToc, getReportTemplates, streamReportContent } from '../api.js'
 
+const STEPS = ['기준정보 입력', '목차 생성·편집', '본문 생성', '내보내기']
+
 const criteriaRef = ref(null)
 const criteria = ref({})
 const missing = ref([])
+const criteriaOpen = ref(true)
 
 const messages = ref([])
 const sending = ref(false)
@@ -77,9 +120,23 @@ const phase = ref('idle') // idle | toc | generating | done
 const toc = ref({ title: '', sections: [] })
 const leaves = ref([]) // [{name, status, content, references, error}]
 
+const stepIndex = computed(
+  () => ({ idle: 0, toc: 1, generating: 2, done: 3 })[phase.value] ?? 0
+)
+
 // 표준 템플릿 (서식 표본 — 기본값: 첫 템플릿)
 const templates = ref([])
 const selectedTemplate = ref('')
+
+// 내보내기 완료 토스트
+const toast = ref('')
+let toastTimer = null
+function showToast(msg) {
+  toast.value = msg
+  if (toastTimer) clearTimeout(toastTimer)
+  toastTimer = setTimeout(() => { toast.value = '' }, 3200)
+}
+onBeforeUnmount(() => { if (toastTimer) clearTimeout(toastTimer) })
 
 onMounted(async () => {
   try {
@@ -126,7 +183,7 @@ async function requestToc() {
     return
   }
   sending.value = true
-  statusText.value = '목차 생성 중…'
+  statusText.value = '목차 생성 중… (API-RPT-001)'
   banner.value = ''
   try {
     const result = await generateToc(criteria.value)
@@ -240,14 +297,14 @@ function attachContents(nodes, queue) {
 }
 
 /** 부제 줄: "서면 보고 / {보고일시 — 미입력 시 오늘} / {역할}" */
-function composeSubtitle() {
+const docSubtitle = computed(() => {
   const bg = criteria.value.backgroundInfo || {}
   const role = (criteria.value.purposeOfDocument || {}).role || ''
   const dt = bg.reportTime ? new Date(bg.reportTime) : new Date()
   const days = ['일', '월', '화', '수', '목', '금', '토']
   const dateText = `${dt.getFullYear()}. ${dt.getMonth() + 1}. ${dt.getDate()}.(${days[dt.getDay()]})`
   return ['서면 보고', dateText, role].filter(Boolean).join(' / ')
-}
+})
 
 async function doExport(format) {
   banner.value = ''
@@ -255,7 +312,7 @@ async function doExport(format) {
     const tree = attachContents(toc.value.sections, [...leaves.value])
     const { blob, filename } = await exportReport(toc.value.title, tree, format, {
       template: selectedTemplate.value,
-      subtitle: selectedTemplate.value ? composeSubtitle() : '',
+      subtitle: selectedTemplate.value ? docSubtitle.value : '',
     })
     const url = URL.createObjectURL(blob)
     const a = document.createElement('a')
@@ -265,6 +322,7 @@ async function doExport(format) {
     a.click()
     a.remove()
     URL.revokeObjectURL(url)
+    showToast(`내보내기 완료 — "${filename}" 파일이 저장되었습니다.`)
   } catch (err) {
     banner.value = `내보내기 실패: ${err.message}`
   }

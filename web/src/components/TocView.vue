@@ -1,12 +1,18 @@
 <template>
   <div class="toc-view">
-    <div class="toc-toolbar">
-      <span class="toc-title">목차 {{ title ? `— ${title}` : '' }}</span>
+    <div class="result-toolbar">
+      <span class="toc-title">목차</span>
+      <span v-if="title" class="toc-doc-title">— {{ title }}</span>
       <span class="topbar-spacer"></span>
-      <button type="button" class="ghost-btn" :disabled="busy" @click="$emit('regenerate')">
+      <button type="button" class="btn btn-outline-gray" :disabled="busy" @click="$emit('regenerate')">
         목차 재요청
       </button>
-      <button type="button" :disabled="busy || sections.length === 0" @click="$emit('generate-content')">
+      <button
+        type="button"
+        class="btn btn-primary"
+        :disabled="busy || sections.length === 0"
+        @click="$emit('generate-content')"
+      >
         본문 생성
       </button>
     </div>
@@ -49,6 +55,7 @@ const TocNodeList = defineComponent({
   props: {
     nodes: { type: Array, required: true },
     busy: { type: Boolean, default: false },
+    depth: { type: Number, default: 0 },
   },
   emits: ['change'],
   setup(p, { emit: e }) {
@@ -96,11 +103,14 @@ const TocNodeList = defineComponent({
                 disabled: p.busy || idx === p.nodes.length - 1,
                 onClick: () => move(idx, 1),
               }, '▼'),
-              h('button', {
-                type: 'button', class: 'icon-btn', title: '하위 추가',
-                disabled: p.busy,
-                onClick: () => addChild(node),
-              }, '+'),
+              // 하위 추가는 챕터(최상위) 행에만 (디자인 사양)
+              p.depth === 0
+                ? h('button', {
+                    type: 'button', class: 'icon-btn', title: '하위 목차 추가',
+                    disabled: p.busy,
+                    onClick: () => addChild(node),
+                  }, '+')
+                : null,
               h('button', {
                 type: 'button', class: 'icon-btn icon-danger', title: '삭제',
                 disabled: p.busy,
@@ -111,7 +121,7 @@ const TocNodeList = defineComponent({
           (node.children && node.children.length)
             ? h('ul', { class: 'toc-children' },
                 h(TocNodeList, {
-                  nodes: node.children, busy: p.busy, onChange: changed,
+                  nodes: node.children, busy: p.busy, depth: p.depth + 1, onChange: changed,
                 }))
             : null,
         ]),

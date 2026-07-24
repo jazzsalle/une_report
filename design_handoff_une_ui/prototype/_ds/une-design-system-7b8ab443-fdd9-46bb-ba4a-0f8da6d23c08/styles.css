@@ -1,0 +1,9 @@
+@import './tokens/fonts.css';
+@import './tokens/fig-tokens.css';
+@import './tokens/typography.css';
+@import './components/display/fig-assets.css';
+@import './components/navigation/fig-assets.css';
+@import './components/navigation/fig-tokens.css';
+@import './components/legacy/fig-tokens.css';
+@import './components/overlay/fig-assets.css';
+@import './ui_kits/lnb/fig-assets.css';

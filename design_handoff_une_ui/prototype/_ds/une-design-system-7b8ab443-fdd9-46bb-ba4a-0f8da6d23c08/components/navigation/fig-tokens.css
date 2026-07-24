@@ -1,0 +1,135 @@
+/* Generated from Figma Variables. First mode = :root default.
+   FLOAT tokens are unitless — multiply by 1px in calc() where a length is needed. */
+
+:root {
+  --color-background-white: var(--color-light-gray-0); /* @kind color */
+  --color-border-gray-2: var(--color-light-gray-30-2); /* @kind color */
+  --color-border-gray: var(--color-light-gray-30); /* @kind color */
+  --color-divider-gray-light: var(--color-light-gray-20); /* @kind color */
+  --color-divider-secondary: var(--color-light-secondary-70); /* @kind color */
+  --color-graphic-blue-dark-2: var(--color-light-graphic-70-2); /* @kind color */
+  --color-graphic-blue-dark: var(--color-light-graphic-70); /* @kind color */
+  --color-high-contrast-graphic-70-2: rgb(57,80,108); /* @kind color */
+  --color-high-contrast-graphic-70: rgb(57,80,108); /* @kind color */
+  --color-high-contrast-gray-10-2: rgb(230,232,234); /* @kind color */
+  --color-high-contrast-gray-10-3: rgb(230,232,234); /* @kind color */
+  --color-high-contrast-gray-100: rgb(0,0,0); /* @kind color */
+  --color-high-contrast-gray-10: rgb(230,232,234); /* @kind color */
+  --color-high-contrast-gray-20-2: rgb(205,209,213); /* @kind color */
+  --color-high-contrast-gray-20: rgb(205,209,213); /* @kind color */
+  --color-high-contrast-gray-70-2: rgb(70,76,83); /* @kind color */
+  --color-high-contrast-gray-70: rgb(70,76,83); /* @kind color */
+  --color-high-contrast-gray-80: rgb(51,54,61); /* @kind color */
+  --color-high-contrast-gray-90-2: rgb(30,33,36); /* @kind color */
+  --color-high-contrast-gray-90-3: rgb(30,33,36); /* @kind color */
+  --color-high-contrast-gray-90: rgb(30,33,36); /* @kind color */
+  --color-high-contrast-gray-95: rgb(19,20,22); /* @kind color */
+  --color-high-contrast-secondary-20-2: rgb(171,216,227); /* @kind color */
+  --color-high-contrast-secondary-20: rgb(171,216,227); /* @kind color */
+  --color-high-contrast-secondary-60: rgb(31,104,122); /* @kind color */
+  --color-light-graphic-70-2: rgb(57,80,108); /* @kind color */
+  --color-light-graphic-70: rgb(57,80,108); /* @kind color */
+  --color-light-gray-0-2: rgb(255,255,255); /* @kind color */
+  --color-light-gray-0-3: rgb(255,255,255); /* @kind color */
+  --color-light-gray-0: rgb(255,255,255); /* @kind color */
+  --color-light-gray-20: rgb(205,209,213); /* @kind color */
+  --color-light-gray-30-2: rgb(177,184,190); /* @kind color */
+  --color-light-gray-30: rgb(177,184,190); /* @kind color */
+  --color-light-gray-5: rgb(244,245,246); /* @kind color */
+  --color-light-gray-70-2: rgb(70,76,83); /* @kind color */
+  --color-light-gray-70: rgb(70,76,83); /* @kind color */
+  --color-light-gray-90: rgb(30,33,36); /* @kind color */
+  --color-light-gray-95-2: rgb(19,20,22); /* @kind color */
+  --color-light-gray-95: rgb(19,20,22); /* @kind color */
+  --color-light-secondary-70: rgb(6,58,116); /* @kind color */
+  --color-light-secondary-80-2: rgb(5,43,87); /* @kind color */
+  --color-light-secondary-80: rgb(5,43,87); /* @kind color */
+  --color-surface-gray-subtler: var(--color-light-gray-5); /* @kind color */
+  --color-surface-inverse: var(--color-light-gray-90); /* @kind color */
+  --color-surface-white-subtler: var(--color-light-gray-0-2); /* @kind color */
+  --color-text-basic-inverse-2: var(--color-light-gray-0-2); /* @kind color */
+  --color-text-basic-inverse-3: var(--color-light-gray-0-3); /* @kind color */
+  --color-text-basic-inverse: var(--color-light-gray-0); /* @kind color */
+  --color-text-bolder-2: var(--color-light-gray-95-2); /* @kind color */
+  --color-text-bolder: var(--color-light-gray-95); /* @kind color */
+  --color-text-secondary-2: var(--color-light-secondary-80-2); /* @kind color */
+  --color-text-secondary: var(--color-light-secondary-80); /* @kind color */
+  --color-text-subtle-2: var(--color-light-gray-70-2); /* @kind color */
+  --color-text-subtle: var(--color-light-gray-70); /* @kind color */
+  --font-size-body-medium: 17;
+  --font-size-heading-medium: 24;
+  --font-size-heading-small: 19;
+  --gap-11: var(--number-18);
+  --gap-4: var(--number-7);
+  --gap-5-2: var(--number-8-2);
+  --gap-5: var(--number-8);
+  --gap-6: var(--number-9);
+  --gap-7-2: var(--number-10-2);
+  --gap-7: var(--number-10);
+  --gap-9-2: var(--number-14-2);
+  --gap-9: var(--number-14);
+  --number-10-2: 24; /* @kind other */
+  --number-10: 24; /* @kind other */
+  --number-14-2: 40; /* @kind other */
+  --number-14: 40; /* @kind other */
+  --number-18: 64; /* @kind other */
+  --number-2-2: 2; /* @kind other */
+  --number-2: 2; /* @kind other */
+  --number-3-2: 4; /* @kind other */
+  --number-3: 4; /* @kind other */
+  --number-5-2: 8; /* @kind other */
+  --number-5: 8; /* @kind other */
+  --number-7-2: 12; /* @kind other */
+  --number-7: 12; /* @kind other */
+  --number-8-2: 16; /* @kind other */
+  --number-8: 16; /* @kind other */
+  --number-9: 20; /* @kind other */
+  --padding-1-2: var(--number-2-2);
+  --padding-1: var(--number-2);
+  --padding-3-2: var(--number-5-2);
+  --padding-3: var(--number-5);
+  --padding-5: var(--number-7-2);
+  --padding-6: var(--number-8-2);
+  --padding-8-2: var(--number-10-2);
+  --padding-8: var(--number-10);
+  --primary-p-700: rgb(0,55,205); /* @kind color */
+  --primary-p-800: rgb(1,39,131); /* @kind color */
+  --radius-small1-2: var(--number-3-2);
+  --radius-small1: var(--number-3);
+  --radius-xlarge2-2: var(--number-7-2);
+  --radius-xlarge2: var(--number-7);
+  --secondary-s-500: rgb(252,107,25); /* @kind color */
+  --typo-font-type: "Pretendard GOV";
+  --typo-font-weight-bold: "Bold";
+  --typo-font-weight-regular-2: "Regular"; /* @kind other */
+  --typo-font-weight-regular: "Regular"; /* @kind other */
+  --typo-letter-spacing-0: 0;
+}
+
+:root[data-mode="high-contrast"] {
+  --color-background-white: var(--color-high-contrast-gray-100); /* @kind color */
+  --color-border-gray-2: var(--color-high-contrast-gray-70-2); /* @kind color */
+  --color-border-gray: var(--color-high-contrast-gray-70); /* @kind color */
+  --color-divider-gray-light: var(--color-high-contrast-gray-80); /* @kind color */
+  --color-divider-secondary: var(--color-high-contrast-secondary-60); /* @kind color */
+  --color-graphic-blue-dark-2: var(--color-high-contrast-graphic-70-2); /* @kind color */
+  --color-graphic-blue-dark: var(--color-high-contrast-graphic-70); /* @kind color */
+  --color-surface-gray-subtler: var(--color-high-contrast-gray-95); /* @kind color */
+  --color-surface-inverse: var(--color-high-contrast-gray-10-3); /* @kind color */
+  --color-surface-white-subtler: var(--color-high-contrast-gray-90-2); /* @kind color */
+  --color-text-basic-inverse-2: var(--color-high-contrast-gray-90-2); /* @kind color */
+  --color-text-basic-inverse-3: var(--color-high-contrast-gray-90-3); /* @kind color */
+  --color-text-basic-inverse: var(--color-high-contrast-gray-90); /* @kind color */
+  --color-text-bolder-2: var(--color-high-contrast-gray-10-2); /* @kind color */
+  --color-text-bolder: var(--color-high-contrast-gray-10); /* @kind color */
+  --color-text-secondary-2: var(--color-high-contrast-secondary-20-2); /* @kind color */
+  --color-text-secondary: var(--color-high-contrast-secondary-20); /* @kind color */
+  --color-text-subtle-2: var(--color-high-contrast-gray-20-2); /* @kind color */
+  --color-text-subtle: var(--color-high-contrast-gray-20); /* @kind color */
+}
+
+:root[data-mode="mobile"] {
+  --font-size-body-medium: 17;
+  --font-size-heading-medium: 22;
+  --font-size-heading-small: 19;
+}

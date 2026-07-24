@@ -1,0 +1,10 @@
+/* une design system — webfonts
+   원본: design_handoff_une_ui/tokens/fonts.css
+   경로를 복사 위치(./fonts/) 기준으로 수정. Thin(100)은 바이너리 미제공으로 제외.
+   Pretendard GOV·Noto Sans KR CDN @import는 폐쇄망 동작을 위해 제거 —
+   UI는 Spoqa Han Sans Neo만 사용한다 (typography.css --font-ui 폴백으로 충분). */
+
+@font-face{font-family:'Spoqa Han Sans Neo';src:url('./fonts/SpoqaHanSansNeo-Light.ttf') format('truetype');font-weight:300;font-style:normal;font-display:swap}
+@font-face{font-family:'Spoqa Han Sans Neo';src:url('./fonts/SpoqaHanSansNeo-Regular.ttf') format('truetype');font-weight:400;font-style:normal;font-display:swap}
+@font-face{font-family:'Spoqa Han Sans Neo';src:url('./fonts/SpoqaHanSansNeo-Medium.ttf') format('truetype');font-weight:500;font-style:normal;font-display:swap}
+@font-face{font-family:'Spoqa Han Sans Neo';src:url('./fonts/SpoqaHanSansNeo-Bold.ttf') format('truetype');font-weight:700;font-style:normal;font-display:swap}
